@@ -1,0 +1,84 @@
+/* Boot splash: mark draws in, wordmark fades up, a thin copper line sweeps.
+   Flat colors only — no gradients, no colored shadows. */
+
+.splash {
+  position: fixed;
+  inset: 0;
+  background: var(--bg-base);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.splash-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+
+/* The brand mark (notched square SVG): scales/fades in first. */
+.splash-mark {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  opacity: 0;
+  transform: scale(0.6) rotate(-8deg);
+  transition: opacity 320ms ease-out, transform 420ms cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+.splash-mark svg { display: block; }
+.splash.in .splash-mark {
+  opacity: 1;
+  transform: scale(1) rotate(0deg);
+}
+
+/* The wordmark: rises and fades in just after the mark. */
+.splash-word {
+  font-family: var(--font-ui);
+  font-size: 44px;
+  font-weight: 500;
+  letter-spacing: 12px;
+  margin-left: 12px; /* recenter against letter-spacing */
+  color: var(--text-primary);
+  opacity: 0;
+  transform: translateY(10px);
+  transition: opacity 380ms ease-out 180ms, transform 380ms ease-out 180ms;
+  user-select: none;
+}
+.splash.in .splash-word {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* Thin copper line sweeps from 0 to full width under the word. */
+.splash-line {
+  width: 180px;
+  height: 1px;
+  background: var(--border);
+  position: relative;
+  overflow: hidden;
+  opacity: 0;
+  transition: opacity 200ms ease-out 320ms;
+}
+.splash.in .splash-line { opacity: 1; }
+.splash-line::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: var(--accent);
+  transform: translateX(-100%);
+}
+.splash.in .splash-line::after {
+  animation: line-sweep 620ms cubic-bezier(0.4, 0, 0.2, 1) 360ms forwards;
+}
+@keyframes line-sweep {
+  to { transform: translateX(0); }
+}
+
+/* Lift. */
+.splash.lifting {
+  opacity: 0;
+  transition: opacity 320ms ease-out;
+}

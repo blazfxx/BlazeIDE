@@ -1,0 +1,78 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Blaze IDE",
+  "version": "0.1.0",
+  "identifier": "org.blazeapi.ide",
+  "build": {
+    "frontendDist": "../dist",
+    "beforeBuildCommand": "npm run build",
+    "beforeDevCommand": "npm run build"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [],
+    "security": {
+      "csp": {
+        "default-src": "'self'",
+        "script-src": "'self'",
+        "style-src": "'self' 'unsafe-inline'",
+        "font-src": "'self' data:",
+        "img-src": "'self' data: blob: https://open-vsx.org blazemedia: http://blazemedia.localhost",
+        "media-src": "'self' blob: blazemedia: http://blazemedia.localhost",
+        "connect-src": "'self' ipc: http://ipc.localhost blazemedia: http://blazemedia.localhost",
+        "worker-src": "'self' blob:",
+        "frame-src": "blazemedia: http://blazemedia.localhost http://localhost:* http://127.0.0.1:*",
+        "object-src": "'none'",
+        "base-uri": "'self'",
+        "form-action": "'none'"
+      },
+      "freezePrototype": true,
+      "dangerousDisableAssetCspModification": false
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "dmg",
+      "app",
+      "nsis",
+      "msi"
+    ],
+    "category": "DeveloperTool",
+    "shortDescription": "Agentic code editor powered by BlazeAPI",
+    "copyright": "BlazeAPI",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "hardenedRuntime": true,
+      "entitlements": "entitlements.plist"
+    },
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser"
+      },
+      "digestAlgorithm": "sha256"
+    },
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDE3N0VFM0IwMUM5Q0E0NUEKUldSYXBKd2NzT04rRjdBS0VmWEIxMWtBY1ZweVY5VjZ3djEwajdFSi9SK2FwTERZOTVES3E5ZDMK",
+      "endpoints": [
+        "https://blazeapi.org/ide/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}

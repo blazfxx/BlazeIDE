@@ -1,0 +1,214 @@
+:root {
+  /* Monochrome — pure black/white/grey. The "accent" is plain white; status
+     hues kept as muted greys so nothing is colored. */
+  --bg-base:        #000000;
+  --bg-panel:       #0a0a0a;
+  --bg-elevated:    #141414;
+  --bg-hover:       #1c1c1c;
+  --bg-active:      #262626;
+  --border:         #2e2e2e;
+  --text-primary:   #f5f5f5;
+  --text-secondary: #8a8a8a;
+  --text-disabled:  #4a4a4a;
+  --accent:         #ffffff;
+  --accent-hover:   #d4d4d4;
+  --accent-success: #c8c8c8;
+  --accent-warn:    #a8a8a8;
+  --accent-error:   #e6e6e6;
+  /* Themeable bits that used to be hardcoded. */
+  --text-on-accent: #000000;   /* text/icon on an accent-filled surface */
+  --overlay:        rgba(0, 0, 0, 0.5);
+  --shadow:         rgba(0, 0, 0, 0.5);
+  --focus-ring:     rgba(255, 255, 255, 0.06);
+  --font-mono:      'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Menlo', 'Consolas', monospace;
+  --font-ui:        -apple-system, 'SF Pro Text', 'Segoe UI Variable Text', 'Segoe UI', system-ui, sans-serif;
+  --radius-sm:      4px;
+  --radius-md:      6px;
+
+  --titlebar-h:     28px;
+  --statusbar-h:    24px;
+  --sidebar-w:      220px;
+  --ai-panel-w:     320px;
+  --terminal-h:     200px;
+
+  /* Custom background (set by the renderer from settings). */
+  --bg-image:       none;
+  --bg-blur:        0px;
+  --bg-opacity:     0;
+  --bg-pos-x:       50%;
+  --bg-pos-y:       50%;
+  --bg-scale:       1;
+  --bg-fit:         cover;
+  --bg-rotate:      0deg;
+  --bg-enhance:     none;
+  --bg-rendering:   auto;
+}
+
+/* Light theme — inverted monochrome. Applied via <html data-theme="light">. */
+:root[data-theme="light"] {
+  --bg-base:        #ffffff;
+  --bg-panel:       #f6f6f6;
+  --bg-elevated:    #eeeeee;
+  --bg-hover:       #e4e4e4;
+  --bg-active:      #d8d8d8;
+  --border:         #d0d0d0;
+  --text-primary:   #111111;
+  --text-secondary: #6a6a6a;
+  --text-disabled:  #b0b0b0;
+  --accent:         #111111;
+  --accent-hover:   #333333;
+  --accent-success: #444444;
+  --accent-warn:    #666666;
+  --accent-error:   #8a1f1f;
+  --text-on-accent: #ffffff;
+  --overlay:        rgba(0, 0, 0, 0.28);
+  --shadow:         rgba(0, 0, 0, 0.18);
+  --focus-ring:     rgba(0, 0, 0, 0.08);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+/* Custom-background layer: a fixed image covering the entire window, behind
+   the whole workbench. When active, every panel goes translucent so the image
+   shows through the full IDE. */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background-image: var(--bg-image);
+  background-size: var(--bg-fit, cover);
+  background-position: var(--bg-pos-x) var(--bg-pos-y);
+  background-repeat: no-repeat;
+  filter: blur(var(--bg-blur)) var(--bg-enhance);
+  image-rendering: var(--bg-rendering);
+  transform: scale(var(--bg-scale)) rotate(var(--bg-rotate, 0deg));
+  transform-origin: var(--bg-pos-x) var(--bg-pos-y);
+  opacity: var(--bg-opacity);
+  pointer-events: none;
+}
+/* Video background layer — mirrors the image layer's placement and look. */
+#bg-video {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: var(--bg-fit, cover);
+  object-position: var(--bg-pos-x) var(--bg-pos-y);
+  filter: blur(var(--bg-blur)) var(--bg-enhance);
+  transform: scale(var(--bg-scale)) rotate(var(--bg-rotate, 0deg));
+  transform-origin: var(--bg-pos-x) var(--bg-pos-y);
+  opacity: var(--bg-opacity);
+  pointer-events: none;
+}
+#app { position: relative; z-index: 1; }
+
+/* With a background active, make all surfaces see-through to varying degrees
+   so the image is visible across the whole IDE while text stays legible.
+   color-mix keeps each surface's own tint, just at partial opacity. */
+body[data-has-bg="1"] #app,
+body[data-has-bg="1"] #main,
+body[data-has-bg="1"] #editor-host,
+body[data-has-bg="1"] .monaco-editor,
+body[data-has-bg="1"] .monaco-editor .overflow-guard,
+body[data-has-bg="1"] .monaco-editor-background,
+body[data-has-bg="1"] .monaco-editor .margin { background: transparent !important; }
+body[data-has-bg="1"] #titlebar,
+body[data-has-bg="1"] #sidebar,
+body[data-has-bg="1"] #tabbar,
+body[data-has-bg="1"] #ai-panel,
+body[data-has-bg="1"] #terminal-panel,
+body[data-has-bg="1"] #statusbar {
+  background: color-mix(in srgb, var(--bg-panel) 62%, transparent);
+}
+
+/* Auto-contrast mode: text stays light with a single soft dark halo so it
+   reads over any image region — light or dark — without the eye-straining
+   double shadow. Panels also get denser so chrome text is crisp. */
+body[data-auto-contrast] #app,
+body[data-auto-contrast] .msg,
+body[data-auto-contrast] #sidebar,
+body[data-auto-contrast] #tabbar,
+body[data-auto-contrast] #titlebar,
+body[data-auto-contrast] #ai-panel,
+body[data-auto-contrast] #statusbar {
+  text-shadow: 0 1px 3px var(--text-halo);
+}
+body[data-auto-contrast][data-has-bg="1"] #titlebar,
+body[data-auto-contrast][data-has-bg="1"] #sidebar,
+body[data-auto-contrast][data-has-bg="1"] #tabbar,
+body[data-auto-contrast][data-has-bg="1"] #ai-panel,
+body[data-auto-contrast][data-has-bg="1"] #terminal-panel,
+body[data-auto-contrast][data-has-bg="1"] #statusbar {
+  background: color-mix(in srgb, var(--bg-panel) 88%, transparent);
+}
+
+::-webkit-scrollbar { width: 3px; height: 3px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: transparent; border-radius: 2px; }
+*:hover > ::-webkit-scrollbar-thumb,
+*:hover::-webkit-scrollbar-thumb { background: var(--accent); }
+
+.icon { display: inline-flex; align-items: center; justify-content: center; }
+.icon svg { display: block; }
+.icon-12 svg { width: 12px; height: 12px; }
+.icon-20 svg { width: 20px; height: 20px; }
+
+button {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 4px 10px;
+  cursor: pointer;
+}
+button:hover { background: var(--bg-hover); }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--text-on-accent); font-weight: 600; }
+button.primary:hover { background: var(--accent-hover); }
+button:disabled { color: var(--text-disabled); cursor: default; }
+button.primary:disabled { background: var(--bg-elevated); border-color: var(--border); }
+
+input, textarea, select {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 8px;
+  outline: none;
+}
+input:focus, textarea:focus, select:focus { border-color: var(--accent); }
+
+/* Flat pulsing arc spinner — no gradients */
+.spinner {
+  width: 14px; height: 14px;
+  border: 2px solid transparent;
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.9s linear infinite, pulse 1.4s ease-in-out infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+/* Never show the platform's media controls / play overlay on the background video. */
+#bg-video { pointer-events: none; }
+#bg-video::-webkit-media-controls,
+#bg-video::-webkit-media-controls-panel,
+#bg-video::-webkit-media-controls-start-playback-button,
+#bg-video::-webkit-media-controls-overlay-play-button,
+#bg-video::-webkit-media-controls-play-button { display: none !important; -webkit-appearance: none; opacity: 0; }

@@ -1,0 +1,255 @@
+/* Workbench layout: titlebar, panels, tabs, resizers, statusbar. */
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  width: 100vw;
+}
+
+/* ---- titlebar ---- */
+#titlebar {
+  position: relative;
+  height: var(--titlebar-h);
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  -webkit-app-region: drag;
+  padding-left: 78px;
+  padding-right: 12px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: transparent;
+}
+/* Windows/Linux keep the native window frame, so no room for traffic lights. */
+:root:not([data-platform="mac"]) #titlebar { padding-left: 12px; }
+#titlebar .title-text { pointer-events: none; }
+#titlebar .title-sep { color: var(--text-disabled); margin: 0 4px; }
+#titlebar button, #titlebar input { -webkit-app-region: no-drag; }
+/* Gear pinned to the right edge; title stays centred via absolute centering. */
+#titlebar .titlebar-settings {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-secondary);
+  opacity: 0.9;
+}
+#titlebar .titlebar-settings:hover { color: var(--text-primary); opacity: 1; background: var(--bg-hover); }
+
+/* ---- main row ---- */
+#main {
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  min-height: 0;
+}
+
+#sidebar {
+  width: var(--sidebar-w);
+  flex: none;
+  background: var(--bg-panel);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+#center {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+#tabbar {
+  height: 34px;
+  flex: none;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+#editor-host {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  background: var(--bg-base);
+}
+
+#ai-panel {
+  width: var(--ai-panel-w);
+  flex: none;
+  background: var(--bg-panel);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+#terminal-panel {
+  height: var(--terminal-h);
+  flex: none;
+  background: var(--bg-panel);
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+#statusbar {
+  height: var(--statusbar-h);
+  flex: none;
+  background: var(--bg-panel);
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  padding: 0 10px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+/* ---- resizers ---- */
+.resizer {
+  flex: none;
+  background: transparent;
+  transition: background 120ms;
+  z-index: 10;
+}
+.resizer-sidebar, .resizer-ai { width: 4px; margin: 0 -2px; cursor: col-resize; }
+.resizer-term { height: 4px; margin: -2px 0; cursor: row-resize; }
+.resizer:hover { background: var(--accent); opacity: 0.4; }
+
+.collapsed { display: none !important; }
+
+/* ---- tabs ---- */
+#tabbar .tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border-right: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 12px;
+  cursor: default;
+  white-space: nowrap;
+  user-select: none;
+}
+#tabbar .tab:hover { background: var(--bg-hover); }
+#tabbar .tab.active {
+  background: var(--bg-base);
+  color: var(--text-primary);
+}
+#tabbar .tab .dirty {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--accent);
+}
+/* Error/warning state: colour the filename + show a count badge. */
+#tabbar .tab .tab-label.has-errors { color: var(--accent-error); }
+#tabbar .tab .tab-label.has-warnings { color: var(--accent-warn); }
+#tabbar .tab .tab-diag {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+#tabbar .tab .tab-diag.err { background: var(--accent-error); color: var(--bg-base); }
+#tabbar .tab .tab-diag.warn { background: var(--accent-warn); color: var(--bg-base); }
+#tabbar .tab .close {
+  opacity: 0;
+  border-radius: var(--radius-sm);
+  padding: 1px;
+  cursor: pointer;
+}
+#tabbar .tab:hover .close { opacity: 1; }
+#tabbar .tab .close:hover { background: var(--bg-active); color: var(--text-primary); }
+
+/* ---- statusbar items ---- */
+.sb-item { display: inline-flex; align-items: center; gap: 4px; }
+.sb-right { margin-left: auto; display: inline-flex; align-items: center; gap: 12px; }
+/* Usage bar: tiny track + percent label, sits in the right status cluster. */
+.sb-usage { gap: 6px; }
+.sb-usage-track {
+  width: 48px;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--bg-elevated);
+  overflow: hidden;
+  display: inline-block;
+}
+.sb-usage-fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  transition: width 0.3s ease;
+}
+.sb-usage-text { font-size: 11px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.sb-usage.warn .sb-usage-fill { background: var(--accent-warn); }
+.sb-usage.full .sb-usage-fill { background: var(--accent-error); }
+.sb-usage.full .sb-usage-text { color: var(--accent-error); }
+.plan-badge {
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  padding: 0 5px;
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  line-height: 14px;
+}
+.plan-free { color: var(--text-secondary); }
+.plan-pro { color: var(--accent); }
+.plan-max { color: var(--accent-warn); }
+.ai-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+}
+.ai-dot.busy {
+  background: var(--accent);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+/* ---- empty editor state ---- */
+.editor-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--text-disabled);
+  font-size: 13px;
+}
+.editor-empty .empty-hint {
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 2px 8px;
+}
+.editor-empty .empty-mark {
+  width: 28px;
+  height: 28px;
+  border: 2px solid var(--text-disabled);
+}
+.sb-balance { font-variant-numeric: tabular-nums; }
+.sb-balance.warn { color: var(--accent-warn); }
