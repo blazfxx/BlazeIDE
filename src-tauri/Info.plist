@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Merged into the app's Info.plist by Tauri: the text macOS shows when the
+       IDE (or a command it runs, like a dev server) opens files in these folders. -->
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>Blaze IDE opens, edits and previews the projects you keep in your Documents folder.</string>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>Blaze IDE opens, edits and previews the projects you keep on your Desktop.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>Blaze IDE opens, edits and previews the projects you keep in your Downloads folder.</string>
+</dict>
+</plist>

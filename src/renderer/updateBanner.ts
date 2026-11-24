@@ -58,6 +58,31 @@ export function maybeShowUpdateBanner(info: VersionInfo): void {
   });
 }
 
+/** Shown after a background update: "installed" (macOS, applies on the next
+ *  start) or "ready" (Windows, installs on Restart or when the app quits). */
+export function showUpdateReady(version: string, status: 'installed' | 'ready'): void {
+  if (document.querySelector('.update-banner')) document.querySelector('.update-banner')?.remove();
+  const bar = document.createElement('div');
+  bar.className = 'update-banner';
+  const later = status === 'installed' ? 'It starts the next time you open the app.' : 'It installs when you quit.';
+  bar.innerHTML = `
+    <span class="ub-dot"></span>
+    <span class="ub-text">Blaze IDE <b>${escapeHtml(version)}</b> is ready. ${later}</span>
+    <button class="ub-get" id="ubGet">Restart now</button>
+    <button class="ub-x" id="ubX" aria-label="Later">&times;</button>`;
+  document.body.appendChild(bar);
+  requestAnimationFrame(() => bar.classList.add('show'));
+  const get = bar.querySelector<HTMLButtonElement>('#ubGet');
+  const text = bar.querySelector<HTMLElement>('.ub-text');
+  get?.addEventListener('click', () => {
+    if (!get || !text) return;
+    get.disabled = true;
+    get.textContent = 'Restarting…';
+    window.void.applyUpdate().catch((e) => { text.textContent = String(e); get.disabled = false; get.textContent = 'Restart now'; });
+  });
+  bar.querySelector('#ubX')?.addEventListener('click', () => { bar.classList.remove('show'); setTimeout(() => bar.remove(), 250); });
+}
+
 function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] as string));
 }

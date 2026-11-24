@@ -27,12 +27,23 @@ fn err(e: impl std::fmt::Display) -> String {
 pub struct SessionPublic {
     user_email: String,
     username: String,
+    /// Owner account: may use the "Cheapest" routing (UI-level option).
+    admin: bool,
+}
+
+/// Accounts that see the owner-only "Cheapest" routing choice.
+const ADMIN_USERS: &[&str] = &["blazfoxx"];
+
+fn is_admin_name(name: &str) -> bool {
+    ADMIN_USERS.contains(&name.to_lowercase().as_str())
 }
 
 fn session_from(v: &Value) -> SessionPublic {
+    let username = v.get("username").and_then(Value::as_str).unwrap_or("").to_string();
     SessionPublic {
         user_email: v.get("email").and_then(Value::as_str).unwrap_or("").to_string(),
-        username: v.get("username").and_then(Value::as_str).unwrap_or("").to_string(),
+        admin: is_admin_name(&username),
+        username,
     }
 }
 
@@ -145,6 +156,53 @@ pub async fn install_update(app: AppHandle, state: State<'_, AppState>) -> CmdRe
         )
         .await
         .map_err(|e| format!("The update could not be installed ({e}). Download it from {DOWNLOAD_PAGE}."))?;
+    app.restart()
+}
+
+/// Automatic updates (setting `autoUpdate`, default on): check, download and
+/// verify in the background, then keep the download until Restart or quit.
+/// (macOS used to install in place while running: the running app then no
+/// longer matched the bundle on disk, and macOS kept re-asking for folder
+/// access because it could not remember the answer for it.)
+/// Returns {status: off|current|installed|ready, version?}.
+#[tauri::command]
+pub async fn auto_update(app: AppHandle, state: State<'_, AppState>) -> CmdResult<Value> {
+    if !setting_bool(&state, "autoUpdate", true) {
+        return Ok(serde_json::json!({ "status": "off" }));
+    }
+    let ready = state.update_ready.lock().expect("update lock").as_ref().map(|(u, _)| u.version.clone());
+    if let Some(version) = ready {
+        return Ok(serde_json::json!({ "status": "ready", "version": version }));
+    }
+    let Ok(updater) = app.updater() else { return Ok(serde_json::json!({ "status": "current" })) };
+    let update = match tokio::time::timeout(std::time::Duration::from_secs(15), updater.check()).await {
+        Ok(Ok(Some(u))) => u,
+        _ => return Ok(serde_json::json!({ "status": "current" })),
+    };
+    let version = update.version.clone();
+    let mut done: u64 = 0;
+    let handle = app.clone();
+    let bytes = update
+        .download(
+            move |chunk, total| {
+                done += chunk as u64;
+                let _ = handle.emit("update-progress", serde_json::json!({ "done": done, "total": total }));
+            },
+            || {},
+        )
+        .await
+        .map_err(|e| format!("The update could not be downloaded ({e})."))?;
+    *state.update_ready.lock().expect("update lock") = Some((update, bytes));
+    Ok(serde_json::json!({ "status": "ready", "version": version }))
+}
+
+/// Restart into the new version (installs a waiting Windows update first).
+#[tauri::command]
+pub async fn apply_update(app: AppHandle, state: State<'_, AppState>) -> CmdResult<()> {
+    let ready = state.update_ready.lock().expect("update lock").take();
+    if let Some((update, bytes)) = ready {
+        update.install(&bytes).map_err(|e| format!("The update could not be installed ({e}). Download it from {DOWNLOAD_PAGE}."))?;
+    }
     app.restart()
 }
 
@@ -325,6 +383,23 @@ fn setting_str(state: &AppState, key: &str) -> String {
     state.store.settings().get(key).and_then(Value::as_str).unwrap_or("").to_string()
 }
 
+/// The routing choice for BlazeAPI requests: "normal", "direct", "cheapest"
+/// (owner only) or "" (the account's own setting).
+fn routing(state: &AppState) -> String {
+    let admin = state.store.account().and_then(|a| a.get("username").and_then(Value::as_str).map(is_admin_name)).unwrap_or(false);
+    match setting_str(state, "aiRouting").as_str() {
+        "normal" => "normal".into(),
+        "direct" => "direct".into(),
+        "cheapest" if admin => "cheapest".into(),
+        "cheapest" => "normal".into(),
+        _ => String::new(),
+    }
+}
+
+pub(crate) fn routing_for(state: &AppState) -> String {
+    routing(state)
+}
+
 /// Where a model id is served from. `custom:<id>/<model>` is a provider the
 /// user added; everything else is BlazeAPI.
 enum Route {
@@ -367,6 +442,8 @@ pub async fn ai_send(app: AppHandle, window: WebviewWindow, state: State<'_, App
     // Image generation is opt-in: the tool is only offered once the user has
     // turned it on, whatever the page asks for.
     req.media_gen = Some(setting_bool(&state, "aiMediaGen", false) && req.media_gen != Some(false));
+    // Video generation costs real money per clip: a separate opt-in.
+    req.video_gen = Some(setting_bool(&state, "aiVideoGen", false) && req.video_gen != Some(false));
 
     let route = match route_for(&state, &req.model) {
         Ok(r) => r,
@@ -385,7 +462,7 @@ pub async fn ai_send(app: AppHandle, window: WebviewWindow, state: State<'_, App
                 return Ok(());
             };
             analytics::track(&app, "ai_request", Some(&req.model));
-            ai::stream_chat(&state.http, &ai::Target::blaze(&state.v1_base, key), &req, cancel, |ev| send(with_id(&ev))).await
+            ai::stream_chat(&state.http, &ai::Target::blaze_routed(&state.v1_base, key, &routing(&state)), &req, cancel, |ev| send(with_id(&ev))).await
         }
         Route::Custom { base, key, model } => {
             analytics::track(&app, "ai_request", None);
@@ -425,7 +502,7 @@ async fn load_models(state: &AppState, force: bool) -> (Vec<models::ModelEntry>,
         cached
     } else {
         let key = state.api_key();
-        match models::fetch_models(&state.http, &state.v1_base, key.as_deref()).await {
+        match models::fetch_models(&state.http, &state.v1_base, key.as_deref(), &routing(state)).await {
             Ok((fresh, raw)) if !fresh.is_empty() => {
                 *state.models.write().expect("models lock") = fresh.clone();
                 let _ = state.store.set_model_cache(raw);
@@ -504,7 +581,7 @@ pub async fn ai_complete(state: State<'_, AppState>, req: CompleteReq) -> CmdRes
     let name = req.filename.as_deref().map(|f| f.rsplit(['/', '\\']).next().unwrap_or(f));
     for model in candidates {
         let out = match route_for(&state, &model)? {
-            Route::Blaze { key: Some(key) } => ai::complete(&state.http, &ai::Target::blaze(&state.v1_base, &key), &model, name, prefix, suffix).await,
+            Route::Blaze { key: Some(key) } => ai::complete(&state.http, &ai::Target::blaze_routed(&state.v1_base, &key, &routing(&state)), &model, name, prefix, suffix).await,
             Route::Blaze { key: None } => return Ok(String::new()),
             Route::Custom { base, key, model } => ai::complete(&state.http_custom, &ai::Target::custom(&base, key.as_deref()), &model, name, prefix, suffix).await,
         };
@@ -532,14 +609,23 @@ pub async fn ai_run_tool(state: State<'_, AppState>, name: String, args: String,
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MediaReq {
+    /// "image" (default) or "video".
+    #[serde(default)]
+    kind: Option<String>,
     prompt: String,
     path: String,
     aspect_ratio: Option<String>,
+    /// Video: the project image to animate.
+    #[serde(default)]
+    image: Option<String>,
     project_root: String,
 }
 
 #[tauri::command]
 pub async fn ai_generate_media(state: State<'_, AppState>, req: MediaReq) -> CmdResult<String> {
+    if req.kind.as_deref() == Some("video") {
+        return Ok(generate_video_cmd(&state, &req).await);
+    }
     if !setting_bool(&state, "aiMediaGen", false) {
         return Ok("Error: image generation is turned off. The user can enable it in Settings > AI.".into());
     }
@@ -550,9 +636,63 @@ pub async fn ai_generate_media(state: State<'_, AppState>, req: MediaReq) -> Cmd
     };
     let (list, _) = load_models(&state, false).await;
     let wanted = setting_str(&state, "imageModel");
-    let model = if list.iter().any(|m| m.id == wanted && m.kind == "image") { Some(wanted) } else { models::pick_image_model(&list) };
-    let job = models::ImageJob { model, root: &root, rel_path: &req.path, prompt: &req.prompt, aspect: req.aspect_ratio.as_deref() };
-    Ok(models::generate_image(&state.http, &state.v1_base, &key, job).await)
+    let supplier = setting_str(&state, "imageSupplier");
+    let candidates = models::image_candidates(&list, &wanted);
+    if candidates.is_empty() {
+        return Ok("Error: no image model is available on your BlazeAPI account.".into());
+    }
+    // Try the chosen model, then fall back to the next ones when a supplier is
+    // out of stock or failing, so one dead model never stops the agent.
+    let mut failed: Vec<String> = Vec::new();
+    let route = routing(&state);
+    for model in candidates.iter().take(4) {
+        // A forced supplier only applies to the model it was picked for.
+        let forced = if model == &wanted && !supplier.is_empty() { Some(supplier.as_str()) } else { None };
+        let job = models::ImageJob { model: Some(model.clone()), supplier: forced, routing: &route, root: &root, rel_path: &req.path, prompt: &req.prompt, aspect: req.aspect_ratio.as_deref() };
+        let out = models::generate_image(&state.http, &state.v1_base, &key, job).await;
+        let retryable = ["Error: image generation failed", "Error: BlazeAPI returned no image", "Error: could not download", "Error: the image data"].iter().any(|p| out.starts_with(p));
+        if !retryable {
+            return Ok(if failed.is_empty() { out } else { format!("{out} (Fell back after: {}.)", failed.join("; ")) });
+        }
+        failed.push(format!("{model} failed: {}", out.trim_start_matches("Error: ")));
+    }
+    Ok(format!("Error: no image model worked right now ({}). Continue without the image or try again later.", failed.join("; ")))
+}
+
+/// Animate a project image with the chosen (or the next working) video model.
+async fn generate_video_cmd(state: &AppState, req: &MediaReq) -> String {
+    if !setting_bool(state, "aiVideoGen", false) {
+        return "Error: video generation is turned off. The user can enable it in Settings > AI.".into();
+    }
+    let Some(key) = state.api_key() else { return "Error: not signed in.".into() };
+    let Ok(root) = state.sandbox.require_root(&req.project_root) else { return "Error: no project folder is open.".into() };
+    // No image = text-to-video; with an image = animate it (image-to-video).
+    let image = req.image.as_deref().filter(|s| !s.is_empty());
+    let (list, _) = load_models(state, false).await;
+    let candidates = models::video_candidates(&list, &setting_str(state, "videoModel"), image.is_some());
+    if candidates.is_empty() {
+        return "Error: no video model is available on your BlazeAPI account.".into();
+    }
+    let route = routing(state);
+    let mut failed: Vec<String> = Vec::new();
+    for model in candidates.iter().take(3) {
+        let job = models::VideoJob { model, root: &root, image_rel: image, rel_path: &req.path, prompt: &req.prompt, routing: &route };
+        let out = models::generate_video(&state.http, &state.v1_base, &key, job).await;
+        if !out.starts_with("Error: video generation failed") {
+            return if failed.is_empty() { out } else { format!("{out} (Fell back after: {}.)", failed.join("; ")) };
+        }
+        failed.push(format!("{model}: {}", out.trim_start_matches("Error: ")));
+    }
+    format!("Error: no video model worked right now ({}). Continue without the video or try again later.", failed.join("; "))
+}
+
+/// Suppliers (BlazeAPI codenames) that serve an image model, for Settings.
+#[tauri::command]
+pub async fn ai_image_suppliers(state: State<'_, AppState>, model: String) -> CmdResult<Vec<models::SupplierEntry>> {
+    if model.is_empty() || model.len() > 200 {
+        return Ok(Vec::new());
+    }
+    models::fetch_suppliers(&state.http, &state.api_base, &model).await.map_err(err)
 }
 
 // --- chats ----------------------------------------------------------------
@@ -668,19 +808,145 @@ pub fn open_external(app: AppHandle, url: String) -> CmdResult<()> {
 
 #[tauri::command]
 pub async fn pick_media(app: AppHandle, state: State<'_, AppState>, kind: String) -> CmdResult<Option<String>> {
-    let (title, name, exts): (&str, &str, &[&str]) = match kind.as_str() {
-        "video" => ("Choose Video", "Video", &["mp4", "webm", "mov", "m4v", "ogv"]),
-        "audio" => ("Choose Audio", "Audio", &["mp3", "ogg", "oga", "wav", "m4a", "aac", "flac"]),
-        _ => ("Choose Image", "Image", &["png", "jpg", "jpeg", "webp", "gif", "avif", "bmp"]),
+    use blaze_core::media_store::{self, MediaKind};
+    let mk = MediaKind::parse(&kind);
+    let (title, name) = match mk {
+        MediaKind::Video => ("Choose Video", "Video"),
+        MediaKind::Audio => ("Choose Audio", "Audio"),
+        MediaKind::Image => ("Choose Image", "Image"),
     };
     let (tx, rx) = tokio::sync::oneshot::channel();
-    app.dialog().file().set_title(title).add_filter(name, exts).pick_file(move |p| {
+    app.dialog().file().set_title(title).add_filter(name, mk.extensions()).pick_file(move |p| {
         let _ = tx.send(p);
     });
     let Some(picked) = rx.await.ok().flatten() else { return Ok(None) };
     let path = picked.into_path().map_err(err)?;
-    let canon = state.sandbox.grant_picked_file(&path).map_err(err)?;
-    Ok(Some(canon.display().to_string()))
+    // Copy it into the app's media folder: the setting then survives restarts
+    // and moving/deleting the original. Large videos take a moment.
+    let dir = state.media_dir.clone();
+    let stored = tauri::async_runtime::spawn_blocking(move || media_store::import(&dir, &path, mk)).await.map_err(err)?.map_err(err)?;
+    // Drop copies nothing points at any more (keep the one just picked).
+    let mut keep = media_store::referenced(&state.store.settings());
+    keep.push(stored.clone());
+    media_store::prune(&state.media_dir, &keep);
+    Ok(Some(stored.display().to_string()))
+}
+
+// --- Continue on mobile ---------------------------------------------------
+
+#[tauri::command]
+pub fn mobile_status(app: AppHandle) -> Value {
+    crate::mobile::status(&app)
+}
+
+#[tauri::command]
+pub async fn mobile_set_password(app: AppHandle, state: State<'_, AppState>, password: String) -> CmdResult<Value> {
+    let store_pw = password.clone();
+    let hash = tauri::async_runtime::spawn_blocking(move || blaze_core::remote::auth::hash_password(&store_pw)).await.map_err(err)?.map_err(err)?;
+    blaze_core::remote::auth::update(&state.store, |c| {
+        c.password_hash = Some(hash);
+        c.devices.clear();
+        Ok(())
+    })
+    .map_err(err)?;
+    crate::mobile::apply(&app).await;
+    Ok(crate::mobile::status(&app))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MobileConfigReq {
+    enabled: bool,
+    lan: bool,
+    quick_tunnel: bool,
+    relay: bool,
+    #[serde(default)]
+    domain: Option<String>,
+    #[serde(default)]
+    domain_tunnel: bool,
+    #[serde(default)]
+    port: Option<u16>,
+}
+
+#[tauri::command]
+pub async fn mobile_configure(app: AppHandle, state: State<'_, AppState>, cfg: MobileConfigReq) -> CmdResult<Value> {
+    let domain = match cfg.domain.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+        None => None,
+        Some(d) => {
+            let u = url::Url::parse(d).map_err(|_| "Enter the domain as https://ide.example.com".to_string())?;
+            let local = matches!(u.host_str(), Some("localhost") | Some("127.0.0.1"));
+            if u.scheme() != "https" && !local {
+                return Err("Your domain must use https://".into());
+            }
+            Some(format!("{}://{}", u.scheme(), u.host_str().unwrap_or("")) + &u.port().map(|p| format!(":{p}")).unwrap_or_default())
+        }
+    };
+    if let Some(p) = cfg.port {
+        if p < 1024 {
+            return Err("Use a port of 1024 or higher".into());
+        }
+    }
+    blaze_core::remote::auth::update(&state.store, |c| {
+        if cfg.enabled && c.password_hash.is_none() {
+            return Err(blaze_core::Error::msg("Choose a password first"));
+        }
+        c.enabled = cfg.enabled;
+        c.lan = cfg.lan;
+        c.quick_tunnel = cfg.quick_tunnel;
+        c.relay = cfg.relay;
+        c.domain = domain.clone();
+        c.domain_tunnel = cfg.domain_tunnel && domain.is_some();
+        if let Some(p) = cfg.port {
+            c.port = p;
+        }
+        if c.relay && c.relay_slot.is_none() {
+            c.relay_slot = Some(blaze_core::remote::relay::new_slot());
+        }
+        if !c.enabled {
+            // Turning it off signs every phone out.
+            c.devices.clear();
+        }
+        Ok(())
+    })
+    .map_err(err)?;
+    crate::mobile::apply(&app).await;
+    Ok(crate::mobile::status(&app))
+}
+
+#[tauri::command]
+pub async fn mobile_set_tunnel_token(app: AppHandle, token: String) -> CmdResult<Value> {
+    let t = token.trim();
+    if t.is_empty() {
+        crate::secrets::delete_secret(crate::mobile::TUNNEL_TOKEN);
+    } else {
+        if t.len() < 40 || t.len() > 4096 || !t.chars().all(|c| c.is_ascii_alphanumeric() || "-_=+/.".contains(c)) {
+            return Err("That does not look like a Cloudflare tunnel token".into());
+        }
+        crate::secrets::save_secret(crate::mobile::TUNNEL_TOKEN, t)?;
+    }
+    crate::mobile::apply(&app).await;
+    Ok(crate::mobile::status(&app))
+}
+
+#[tauri::command]
+pub fn mobile_pair_qr(url: String) -> CmdResult<Value> {
+    crate::mobile::pair_qr(&url)
+}
+
+#[tauri::command]
+pub fn mobile_revoke(app: AppHandle, state: State<'_, AppState>, id: String) -> CmdResult<Value> {
+    blaze_core::remote::auth::revoke_device(&state.store, &id).map_err(err)?;
+    Ok(crate::mobile::status(&app))
+}
+
+#[tauri::command]
+pub fn cli_status() -> crate::cli_install::CliStatus {
+    crate::cli_install::status()
+}
+
+#[tauri::command]
+pub async fn cli_install() -> CmdResult<String> {
+    tauri::async_runtime::spawn_blocking(crate::cli_install::install).await.map_err(err)?
 }
 
 #[tauri::command]

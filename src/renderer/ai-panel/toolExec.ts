@@ -13,6 +13,7 @@ import type { EditorArea } from '../editor/index';
 import type { ChatView } from './chat';
 import type { RunChanges } from './runChanges';
 import { createToolCard } from './agentView';
+import { agentBrowser } from '../preview/index';
 
 /** Show the AI's question(s) in the input area and wait for the user's answers,
  *  returning them as the tool result for the model. */
@@ -55,6 +56,8 @@ const TREE_CONTEXT_CAP = 24_000;
 export interface ToolExecDeps {
   editor: EditorArea;
   view: ChatView;
+  /** Screenshots taken this round; the controller attaches them to the next request. */
+  shots?: Array<{ label: string; url: string }>;
   /** Accumulates this run's file writes for the changes summary + undo. */
   changes: RunChanges;
 }
@@ -153,6 +156,32 @@ async function applyEdit(editor: EditorArea, abs: string, content: string): Prom
   bus.emit('open-file', { path: abs });
 }
 
+/** generate_video: animate a project image into an .mp4 with a BlazeAPI video model. */
+async function execGenerateVideo(call: ToolCall, deps: ToolExecDeps): Promise<string> {
+  const card = createToolCard(call, { gated: false });
+  deps.view.mount(card.element);
+  card.setRunning();
+  const root = state.projectRoot;
+  if (!root) { card.setResult('Error: no project folder is open.', true); return 'Error: no project folder is open.'; }
+  const args = parseArgs(call.arguments);
+  const image = args && typeof args.image === 'string' ? args.image : '';
+  const prompt = args && typeof args.prompt === 'string' ? args.prompt : '';
+  const rel = args && typeof args.path === 'string' ? args.path : '';
+  if (!rel || (!image && !prompt)) {
+    const msg = 'Error: generate_video needs path (where to save the .mp4) and a prompt (plus image to animate a still).';
+    card.setResult(msg, true);
+    return msg;
+  }
+  const result = await window.void.aiGenerateMedia({ kind: 'video', prompt, path: rel, image: image || undefined, projectRoot: root });
+  const isErr = result.startsWith('Error:');
+  card.setResult(result, isErr);
+  if (!isErr) {
+    const joined = joinProjectPath(root, rel);
+    if (!('error' in joined)) bus.emit('open-file', { path: joined.abs });
+  }
+  return result;
+}
+
 /** Execute one tool call and return the tool-result string for the conversation. */
 export async function execToolCall(call: ToolCall, deps: ToolExecDeps): Promise<string> {
   // ask_question: pause and let the user answer in the input area.
@@ -164,6 +193,29 @@ export async function execToolCall(call: ToolCall, deps: ToolExecDeps): Promise<
   // the main process.
   if (call.name === 'generate_image') {
     return execGenerateMedia(call, deps);
+  }
+
+  if (call.name === 'generate_video') {
+    return execGenerateVideo(call, deps);
+  }
+
+  // The agent's own browser (the Preview tab).
+  if (call.name === 'browser') {
+    const card = createToolCard(call, { gated: false });
+    deps.view.mount(card.element);
+    card.setRunning();
+    const args = parseArgs(call.arguments) ?? {};
+    const r = await agentBrowser(args as Parameters<typeof agentBrowser>[0]);
+    card.setResult(r.text, !!r.isError);
+    if (r.image) {
+      const img = document.createElement('img');
+      img.className = 'agent-shot';
+      img.src = r.image;
+      img.alt = 'Browser screenshot';
+      deps.view.mount(img);
+      deps.shots?.push({ label: r.text.split(':')[0], url: r.image });
+    }
+    return r.text;
   }
 
   // Plan mode: save the plan to .blazeide/plan.md and offer to build it.

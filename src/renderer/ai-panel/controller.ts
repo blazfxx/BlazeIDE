@@ -1,8 +1,8 @@
 // AI conversation controller: builds requests per mode, routes the stream,
 // runs the agent tool loop, applies Edit-mode diffs.
 
-import type { AIStreamEvent, ChatMessage, StoredChat, ToolCall } from '../../shared/types';
-import { bus, state } from '../state';
+import type { AIStreamEvent, ChatMessage, Checkpoint, StoredChat, ToolCall } from '../../shared/types';
+import { bus, el, state } from '../state';
 import type { EditorArea } from '../editor/index';
 import type { ChatView } from './chat';
 import { execToolCall, buildWorkspaceContext } from './toolExec';
@@ -10,6 +10,7 @@ import { RunChanges } from './runChanges';
 import { joinProjectPath } from '../../shared/applyDiff';
 import {
   COMPACT_INSTRUCTION,
+  findModel,
   activeContextWindow,
   activeModelLabel,
   deriveTitle,
@@ -20,12 +21,24 @@ import {
 } from './chatStore';
 
 const FILE_CONTEXT_CAP = 24_000;
-const AGENT_ROUND_CAP = 8;
+// One round = one model call (it may run several tools). Building a small site
+// takes 20-40 rounds, so 8 used to stop agents in the middle of the work.
+const AGENT_ROUND_CAP = 60;
+// A round that fails with a temporary error (timeout, 5xx, rate limit, a
+// dropped stream) is sent again this many times before the run stops.
+const ROUND_RETRIES = 3;
+const CONTINUE_PROMPT = 'Continue where you left off. Check what is already done first, then finish the task.';
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+/** Errors worth retrying: no status (network/stream), 408/409/425/429, 5xx. */
+function retryable(status?: number): boolean {
+  return status === undefined || status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
+}
 
 export interface Controller {
   /** `userText` is sent to the model; `displayText` (if given) is shown in the
    *  chat instead — used to keep injected context out of the visible bubble. */
-  send(userText: string, displayText?: string): Promise<void>;
+  send(userText: string, displayText?: string, images?: string[]): Promise<void>;
   cancel(): void;
   isStreaming(): boolean;
   /** Save the current chat (if any) and start a fresh, empty conversation. */
@@ -41,6 +54,9 @@ export interface Controller {
 
 export function createController(view: ChatView, editor: EditorArea): Controller {
   let conversation: ChatMessage[] = [];
+  // Per user turn: the files the agent changed after it (earlier content), for "Revert".
+  let checkpoints: Checkpoint[] = [];
+  const CHECKPOINT_BUDGET = 4_000_000; // characters kept in the saved chat; oldest dropped first
   let activeRequestId: string | null = null;
   let streaming = false;
   // File writes made during the current agent run — drives the changes summary
@@ -53,9 +69,14 @@ export function createController(view: ChatView, editor: EditorArea): Controller
   let chatId: string | null = null;
   let chatTitle = '';
   let chatCreatedAt = 0;
+  // updatedAt of the copy on screen; a newer file on disk was written by the
+  // blaze CLI or a phone (Continue on mobile) and is loaded instead.
+  let knownUpdatedAt = 0;
 
   // Per-request stream accumulation
   let assistantText = '';
+  let assistantReasoning = '';
+  let lastError: { message: string; status?: number } | null = null;
   let toolCalls: ToolCall[] = [];
   let resolveStream: ((ev: 'done' | 'error') => void) | null = null;
   // The real prompt-token count the model last reported (its actual context
@@ -87,17 +108,40 @@ export function createController(view: ChatView, editor: EditorArea): Controller
       chatCreatedAt = Date.now();
     }
     if (!chatTitle) chatTitle = deriveTitle(conversation);
+    knownUpdatedAt = Date.now();
     const chat: StoredChat = {
       id: chatId,
       title: chatTitle,
       createdAt: chatCreatedAt,
-      updatedAt: Date.now(),
+      updatedAt: knownUpdatedAt,
       mode: state.settings.aiMode,
       model: activeModelLabel(),
       messages: conversation,
+      checkpoints,
     };
     if (await persistChat(chat)) bus.emit('ai-chats-changed', undefined);
   }
+
+  /** Load the open chat again if another app saved a newer copy. Never while
+   *  this panel is working, and never by saving first (that would overwrite
+   *  the newer copy). */
+  async function refreshFromDisk(): Promise<void> {
+    const root = state.projectRoot;
+    const id = chatId;
+    if (streaming || !root || !id) return;
+    const chat = await window.void.chatLoad(root, id).catch(() => null);
+    if (!chat || streaming || chatId !== id || (chat.updatedAt ?? 0) <= knownUpdatedAt) return;
+    conversation = chat.messages;
+    checkpoints = chat.checkpoints ?? [];
+    chatTitle = chat.title;
+    knownUpdatedAt = chat.updatedAt ?? 0;
+    view.replay(conversation, (i) => void revertTo(i));
+    view.addNotice('Updated with messages sent from the blaze CLI or your phone.');
+    emitContext();
+  }
+  window.addEventListener('focus', () => void refreshFromDisk());
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) void refreshFromDisk(); });
+  setInterval(() => { if (!document.hidden) void refreshFromDisk(); }, 15_000);
 
   window.void.onAIChunk((ev: AIStreamEvent) => {
     if (ev.requestId !== activeRequestId) return;
@@ -111,6 +155,11 @@ export function createController(view: ChatView, editor: EditorArea): Controller
         if (state.settings.aiMode === 'agent' || state.settings.aiMode === 'plan') {
           view.setWorking(true, 'Working');
         }
+        break;
+      case 'reasoning':
+        // Kept for the next round (thinking models need it back), not shown.
+        assistantReasoning += ev.text;
+        if (!assistantText) view.setWorking(true, 'Thinking');
         break;
       case 'tool_call':
         toolCalls.push(ev.toolCall);
@@ -152,7 +201,8 @@ export function createController(view: ChatView, editor: EditorArea): Controller
         }
         break;
       case 'error':
-        view.addError(ev.message, ev.status);
+        // Shown by the caller, which may retry the round first.
+        lastError = { message: ev.message, status: ev.status };
         resolveStream?.('error');
         break;
       case 'done':
@@ -166,11 +216,29 @@ export function createController(view: ChatView, editor: EditorArea): Controller
     bus.emit('ai-status', { streaming: on });
   }
 
+  function showLastError(): void {
+    if (lastError) view.addError(lastError.message, lastError.status);
+    lastError = null;
+  }
+
+  /** A button that resumes the agent where it stopped. */
+  function offerContinue(): void {
+    const b = el('button', 'chat-continue', 'Continue');
+    b.addEventListener('click', () => {
+      if (streaming) return;
+      b.remove();
+      void controller.send(CONTINUE_PROMPT, 'Continue');
+    });
+    view.mount(b);
+  }
+
   /** Run one model round; resolves when the stream finishes. */
-  async function streamRound(): Promise<void> {
+  async function streamRound(): Promise<'done' | 'error'> {
     const requestId = crypto.randomUUID();
     activeRequestId = requestId;
     assistantText = '';
+    assistantReasoning = '';
+    lastError = null;
     toolCalls = [];
     liveArgs.clear();
     liveNames.clear();
@@ -191,31 +259,63 @@ export function createController(view: ChatView, editor: EditorArea): Controller
       reasoningEffort: state.settings.reasoningEffort,
       mediaGen: state.settings.aiMediaGen,
     });
-    await done;
+    const result = await done;
     resolveStream = null;
     view.finishAssistant();
+    return result;
   }
 
   async function runAgentLoop(): Promise<void> {
     changes.clear();
     cancelled = false;
+    let retries = 0;
     for (let round = 0; round < AGENT_ROUND_CAP; round++) {
-      await streamRound();
+      const result = await streamRound();
       if (cancelled) { view.setWorking(false); view.addNotice('Stopped.'); break; }
+      if (result === 'error' && toolCalls.length === 0) {
+        const e = lastError;
+        if (e && retryable(e.status) && retries < ROUND_RETRIES) {
+          // Temporary failure: the conversation is intact, so just send the
+          // same round again instead of ending the whole run.
+          retries++;
+          view.addNotice(`${e.message} Retrying (${retries}/${ROUND_RETRIES})…`);
+          lastError = null;
+          view.setWorking(true, 'Retrying');
+          await sleep(e.status === 429 ? 5000 * retries : 1500 * retries);
+          if (cancelled) { view.setWorking(false); view.addNotice('Stopped.'); break; }
+          round--;
+          continue;
+        }
+        view.setWorking(false);
+        showLastError();
+        if (conversation.some((m) => m.role === 'tool')) offerContinue();
+        break;
+      }
+      retries = 0;
       if (toolCalls.length === 0) {
         view.setWorking(false);
         if (assistantText) conversation.push({ role: 'assistant', content: assistantText });
         break;
       }
       const calls = toolCalls;
-      conversation.push({ role: 'assistant', content: assistantText, toolCalls: calls });
+      conversation.push({ role: 'assistant', content: assistantText, toolCalls: calls, ...(assistantReasoning ? { reasoning: assistantReasoning } : {}) });
+      const shots: Array<{ label: string; url: string }> = [];
       // The live "writing…" cards have served their purpose; replace them with
       // the real per-call cards as each executes.
       view.clearLiveTools();
       for (const call of calls) {
         if (cancelled) break;
-        const result = await execToolCall(call, { editor, view, changes });
+        const result = await execToolCall(call, { editor, view, changes, shots });
         conversation.push({ role: 'tool', content: result, toolCallId: call.id });
+      }
+      // Browser screenshots go to the model as images on a user turn (tool
+      // results cannot carry images on most providers).
+      if (shots.length > 0) {
+        const m = findModel(state.settings.selectedModel);
+        const blind = !!m && !m.tags.includes('custom') && m.vision === false;
+        conversation.push(blind
+          ? { role: 'user', content: `[${shots.length} browser screenshot(s) were taken, but ${m?.displayName ?? 'this model'} cannot see images. Use the console action and the code to check the page instead.]` }
+          : { role: 'user', content: `[Browser screenshot(s) you just took: ${shots.map((s) => s.label).join('; ')}. Look at them carefully and fix what is wrong before finishing.]`, images: shots.map((s) => s.url) });
       }
       if (cancelled) { view.setWorking(false); view.addNotice('Stopped.'); break; }
       // Tools done for this round; the next round is generating — keep a
@@ -223,7 +323,8 @@ export function createController(view: ChatView, editor: EditorArea): Controller
       view.setWorking(true, 'Working');
       if (round === AGENT_ROUND_CAP - 1) {
         view.setWorking(false);
-        view.addNotice('Agent stopped after 8 rounds. Send a message to continue.');
+        view.addNotice(`Paused after ${AGENT_ROUND_CAP} steps so it never runs away with your balance.`);
+        offerContinue();
       }
     }
     // After the run, show what changed + a one-click restore.
@@ -240,6 +341,61 @@ export function createController(view: ChatView, editor: EditorArea): Controller
         () => void restoreRun()
       );
     }
+  }
+
+  function trimCheckpoints(): void {
+    let total = 0;
+    for (let i = checkpoints.length - 1; i >= 0; i--) {
+      total += checkpoints[i].files.reduce((n, f) => n + (f.before?.length ?? 0) + f.rel.length, 0);
+      if (total > CHECKPOINT_BUDGET) { checkpoints = checkpoints.slice(i + 1); break; }
+    }
+  }
+
+  /** Revert to the user message at `userIndex`: put every file the agent changed
+   *  in that turn or later back as it was before it, drop that message and
+   *  everything after it, and give its text back to the input to edit. */
+  async function revertTo(userIndex: number): Promise<void> {
+    if (streaming) return;
+    const root = state.projectRoot;
+    const msg = conversation[userIndex];
+    if (!msg || msg.role !== 'user') return;
+    const later = checkpoints.filter((c) => c.userIndex >= userIndex).sort((a, b) => b.userIndex - a.userIndex);
+    let restored = 0, failed = 0;
+    if (root) {
+      // Newest turn first, so a file touched in several turns ends at its oldest "before".
+      for (const cp of later) {
+        for (const f of cp.files) {
+          const j = joinProjectPath(root, f.rel);
+          if ('error' in j) { failed++; continue; }
+          try {
+            if (f.before === null) await window.void.fsDelete(j.abs);
+            else { await window.void.fsWriteFile(j.abs, f.before); editor.syncOpenFile(j.abs, f.before); }
+            restored++;
+          } catch { failed++; }
+        }
+      }
+    }
+    const files = new Set(later.flatMap((c) => c.files.map((f) => f.rel)));
+    checkpoints = checkpoints.filter((c) => c.userIndex < userIndex);
+    conversation = conversation.slice(0, userIndex);
+    lastInputTokens = 0;
+    view.replay(conversation, (i) => void revertTo(i));
+    view.addNotice(files.size
+      ? `Reverted ${files.size} file${files.size === 1 ? '' : 's'} to before that message${failed ? ` (${failed} could not be restored)` : ''}. Edit the message and send it again.`
+      : 'Went back to that message (the AI had not changed any files after it).');
+    void restored;
+    const text = msg.content.replace(/<environment_details>[\s\S]*?<\/environment_details>/g, '').trim();
+    bus.emit('ai-prefill', { text });
+    if (conversation.length === 0 && chatId && root) {
+      // Reverted to the very first message: the saved chat would be empty, so
+      // remove it (save() skips empty chats, which left the old one on disk).
+      await window.void.chatDelete(root, chatId).catch(() => undefined);
+      chatId = null; chatTitle = ''; chatCreatedAt = 0;
+      bus.emit('ai-chats-changed', undefined);
+    } else {
+      await save();
+    }
+    emitContext();
   }
 
   /** Undo the whole run: rewrite every touched file to its pre-run content, and
@@ -286,21 +442,32 @@ export function createController(view: ChatView, editor: EditorArea): Controller
   }
 
   const controller: Controller = {
-    async send(userText: string, displayText?: string): Promise<void> {
-      if (streaming || !userText.trim()) return;
+    async send(userText: string, displayText?: string, images?: string[]): Promise<void> {
+      const imgs = (images ?? []).filter(Boolean);
+      if (streaming || (!userText.trim() && imgs.length === 0)) return;
+      if (!userText.trim()) userText = 'Look at the attached image(s).';
       const mode = state.settings.aiMode;
-      view.addUser(displayText ?? userText);
+      const turnIndex = conversation.length;
+      view.addUser(displayText ?? userText, imgs, () => void revertTo(turnIndex));
+      const withImages = imgs.length ? { images: imgs } : {};
       setStreaming(true);
       try {
         if (mode === 'agent' || mode === 'plan') {
           // Plan and Agent share one tool-driven loop; they differ only in the
           // tool set and system prompt (resolved in the main process by mode).
           const prefix = await firstTurnPrefix();
-          conversation.push({ role: 'user', content: `${prefix}${userText}` });
-          await runAgentLoop();
+          conversation.push({ role: 'user', content: `${prefix}${userText}`, ...withImages });
+          try {
+            await runAgentLoop();
+          } finally {
+            if (changes.size > 0) {
+              checkpoints.push({ userIndex: turnIndex, files: changes.list().map((c) => ({ rel: c.rel, before: c.before })) });
+              trimCheckpoints();
+            }
+          }
         } else {
-          conversation.push({ role: 'user', content: buildAskContent(userText) });
-          await streamRound();
+          conversation.push({ role: 'user', content: buildAskContent(userText), ...withImages });
+          if ((await streamRound()) === 'error') showLastError();
           if (assistantText) conversation.push({ role: 'assistant', content: assistantText });
         }
       } finally {
@@ -328,6 +495,7 @@ export function createController(view: ChatView, editor: EditorArea): Controller
       if (streaming) setStreaming(false);
       await save();
       conversation = [];
+      checkpoints = [];
       chatId = null;
       chatTitle = '';
       chatCreatedAt = 0;
@@ -348,11 +516,13 @@ export function createController(view: ChatView, editor: EditorArea): Controller
       const chat = await window.void.chatLoad(root, id);
       if (!chat) return;
       conversation = chat.messages;
+      checkpoints = chat.checkpoints ?? [];
       chatId = chat.id;
       chatTitle = chat.title;
       chatCreatedAt = chat.createdAt;
+      knownUpdatedAt = chat.updatedAt ?? 0;
       lastInputTokens = 0; // unknown until the next response; estimate for now
-      view.replay(conversation);
+      view.replay(conversation, (i) => void revertTo(i));
       emitContext();
     },
     async compact(): Promise<void> {
@@ -363,7 +533,7 @@ export function createController(view: ChatView, editor: EditorArea): Controller
         // Ask the model to summarize, capturing the summary text without
         // persisting the request/summary turns into the kept history.
         conversation.push({ role: 'user', content: COMPACT_INSTRUCTION });
-        await streamRound();
+        if ((await streamRound()) === 'error') showLastError();
         const summary = assistantText.trim();
         if (summary) {
           conversation = [

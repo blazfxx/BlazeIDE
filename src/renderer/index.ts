@@ -1,6 +1,7 @@
 // Renderer entry: auth gate, then workbench assembly and global wiring.
 
 import './bridge'; // installs window.void before anything else runs
+import { normModelId } from './ai-panel/chatStore';
 import type { MenuAction } from '../shared/ipc';
 import { bus, state } from './state';
 import { initLayout } from './layout/index';
@@ -20,7 +21,7 @@ import { initPreview } from './preview/index';
 import { matchAction } from './keybindings';
 import { playSplash } from './splash';
 import { showForceUpdate } from './forceUpdate';
-import { maybeShowUpdateBanner } from './updateBanner';
+import { maybeShowUpdateBanner, showUpdateReady } from './updateBanner';
 import type { VersionInfo } from '../shared/types';
 import './account/index'; // registers the open-account bus listener
 
@@ -183,6 +184,7 @@ async function boot(): Promise<void> {
   initPreview(editor);
 
   bus.on('open-settings', () => openSettingsTab(editor));
+  bus.on('open-blbots', () => void import('./blbots/index').then((m) => m.openBlBots(editor)));
   bus.on('session-changed', (s) => {
     if (s === null) window.location.reload();
   });
@@ -193,10 +195,28 @@ async function boot(): Promise<void> {
 
   bus.emit('session-changed', session);
 
-  // Soft "update available" nudge (non-forced) once the editor is up.
-  if (versionInfo) maybeShowUpdateBanner(versionInfo);
-  // Look again every 6 hours for long-running sessions.
-  window.setInterval(() => { void window.void.checkVersion().then(maybeShowUpdateBanner).catch(() => undefined); }, 6 * 60 * 60 * 1000);
+  // Updates. Automatic (default): download + verify in the background and say
+  // when it is ready; nothing interrupts work. Off: the old "Update" banner.
+  let shownReady = '';
+  const autoUpdate = (): void => {
+    if (state.settings.autoUpdate === false) {
+      void window.void.checkVersion().then(maybeShowUpdateBanner).catch(() => undefined);
+      return;
+    }
+    void window.void.autoUpdate().then((r) => {
+      if ((r.status === 'installed' || r.status === 'ready') && r.version && r.version !== shownReady) {
+        shownReady = r.version;
+        showUpdateReady(r.version, r.status);
+      }
+    }).catch(() => undefined); // offline / feed unreachable: try again later
+  };
+  if (state.settings.autoUpdate === false) {
+    if (versionInfo) maybeShowUpdateBanner(versionInfo);
+  } else {
+    window.setTimeout(autoUpdate, 15_000); // let the editor finish loading first
+  }
+  // Look again every 2 hours for long-running sessions.
+  window.setInterval(autoUpdate, 2 * 60 * 60 * 1000);
 
   // Monaco loads in the background so the first file click paints instantly.
   editor.prewarm();
@@ -207,6 +227,12 @@ async function boot(): Promise<void> {
     state.models = models;
     // Reconcile the selected model against what this account can call: a
     // stale id would make every send fail.
+    const twin = models.find((m) => m.kind === 'chat' && m.id !== state.settings.selectedModel && normModelId(m.id) === normModelId(state.settings.selectedModel));
+    if (twin && !models.some((m) => m.id === state.settings.selectedModel)) {
+      // Same model under the other routing's spelling (gpt-6-1-sol / gpt-6.1-sol).
+      state.settings.selectedModel = twin.id;
+      void window.void.settingsSet({ selectedModel: twin.id });
+    }
     if (models.length > 0 && !models.some((m) => m.id === state.settings.selectedModel)) {
       // Never fall back to an image model; those are used through a tool.
       const chatModels = models.filter((m) => m.kind === 'chat');

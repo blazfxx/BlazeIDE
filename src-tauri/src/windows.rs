@@ -11,7 +11,13 @@ static NEXT: AtomicU32 = AtomicU32::new(1);
 fn is_internal(url: &url::Url) -> bool {
     match url.scheme() {
         "tauri" => true,
-        "http" | "https" => matches!(url.host_str(), Some("tauri.localhost")),
+        // The Preview frame's own protocols (project files, proxied dev servers).
+        // On macOS this handler also sees navigations INSIDE iframes, so without
+        // these the preview was cancelled (blank) or sent to the user's browser.
+        // Top-level navigation to them cannot come from a page: the preview
+        // iframe is sandboxed without allow-top-navigation.
+        "blazemedia" | "blazeweb" => true,
+        "http" | "https" => matches!(url.host_str(), Some("tauri.localhost" | "blazemedia.localhost" | "blazeweb.localhost")),
         _ => false,
     }
 }
@@ -60,5 +66,9 @@ mod tests {
         assert!(is_internal(&url::Url::parse("http://tauri.localhost/index.html").unwrap()));
         assert!(!is_internal(&url::Url::parse("https://evil.example/").unwrap()));
         assert!(!is_internal(&url::Url::parse("file:///etc/passwd").unwrap()));
+        assert!(is_internal(&url::Url::parse("blazemedia://localhost/Users/me/site/index.html").unwrap()));
+        assert!(is_internal(&url::Url::parse("blazeweb://localhost/localhost:4174/").unwrap()));
+        assert!(is_internal(&url::Url::parse("http://blazeweb.localhost/localhost:4174/").unwrap()));
+        assert!(!is_internal(&url::Url::parse("http://localhost:4174/").unwrap()));
     }
 }

@@ -26,6 +26,16 @@ url = "2"
 # Reads .vsix packages. 9.x: earlier releases have path/extract advisories.
 zip = { version = "9", default-features = false, features = ["deflate"] }
 uuid = { version = "1", features = ["v4"] }
+# Continue on mobile: the phone server, its sign-in, QR codes, tunnels and relay.
+argon2 = { version = "0.5", default-features = false, features = ["alloc", "password-hash"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
+flate2 = "1"
+if-addrs = "0.13"
+# BlBots routines: local time zones and calendar math.
+jiff = "0.2"
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+tar = "0.4"
+tower = { version = "0.5", default-features = false, features = ["util"] }
 
 [dev-dependencies]
 tempfile = "3"

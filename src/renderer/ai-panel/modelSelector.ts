@@ -5,6 +5,8 @@
 import type { ModelEntry, ModelKind } from '../../shared/types';
 import { bus, el, escapeHtml, state } from '../state';
 import { icon, iconChevronDown, iconAI, iconText, iconImage, iconVideo } from '../icons/index';
+import { findModel } from './chatStore';
+import { routingChoices, setRouting } from './routing';
 
 const KINDS: Array<{ kind: ModelKind; label: string; svg: string }> = [
   { kind: 'chat', label: 'Text', svg: iconText },
@@ -34,7 +36,7 @@ export function initModelSelector(host: HTMLElement): void {
   let dropdown: HTMLElement | null = null;
 
   function currentModelLabel(): string {
-    const m = state.models.find((x) => x.id === state.settings.selectedModel);
+    const m = findModel(state.settings.selectedModel);
     return m?.displayName ?? state.settings.selectedModel;
   }
 
@@ -60,12 +62,12 @@ export function initModelSelector(host: HTMLElement): void {
 
   function isSelected(m: ModelEntry): boolean {
     if (m.kind === 'image') return m.id === state.settings.imageModel;
+    if (m.kind === 'video') return m.id === state.settings.videoModel;
     return m.id === state.settings.selectedModel;
   }
 
   function selectModel(m: ModelEntry): void {
-    if (m.kind === 'video') return; // nothing can use a video model yet
-    const patch = m.kind === 'image' ? { imageModel: m.id } : { selectedModel: m.id };
+    const patch = m.kind === 'image' ? { imageModel: m.id } : m.kind === 'video' ? { videoModel: m.id } : { selectedModel: m.id };
     Object.assign(state.settings, patch);
     void window.void.settingsSet(patch);
     if (m.kind === 'chat') closeDropdown();
@@ -73,14 +75,13 @@ export function initModelSelector(host: HTMLElement): void {
   }
 
   function modelRow(m: ModelEntry): HTMLElement {
-    const row = el('div', `dd-item${isSelected(m) ? ' selected' : ''}${m.kind === 'video' ? ' locked' : ''}`);
+    const row = el('div', `dd-item${isSelected(m) ? ' selected' : ''}`);
     const price = priceLabel(m);
-    row.title = m.kind === 'video' ? `${m.id} · video models cannot be used from the IDE yet` : `${m.id}${price ? ` · ${price}${m.kind === 'chat' ? ' per 1M tokens (in / out)' : ''}` : ''}`;
+    row.title = `${m.id}${price ? ` · ${price}${m.kind === 'chat' ? ' per 1M tokens (in / out)' : ''}` : ''}${m.kind === 'video' ? ' · animates an image into a short clip' : ''}`;
     row.appendChild(el('span', 'dd-kind-icon', icon(KIND_ICON[m.kind], 'icon-12')));
     row.appendChild(el('span', 'dd-name', escapeHtml(m.displayName)));
     if (m.free) row.appendChild(el('span', 'badge badge-free', 'FREE'));
     if (m.vision && m.kind === 'chat') row.appendChild(el('span', 'badge', 'VISION'));
-    if (m.kind === 'video') row.appendChild(el('span', 'badge', 'SOON'));
     if (price) row.appendChild(el('span', 'dd-ctx', escapeHtml(price)));
     if (m.kind === 'chat') row.appendChild(el('span', 'dd-ctx', ctxLabel(m.contextWindow)));
     row.addEventListener('click', () => selectModel(m));
@@ -163,7 +164,23 @@ export function initModelSelector(host: HTMLElement): void {
       });
       kinds.appendChild(chip);
     }
-    dropdown.append(search, kinds, list);
+    // Routing: Account / Normal / Direct (+ Cheapest for the owner).
+    const routing = el('div', 'dd-routing');
+    routing.appendChild(el('span', 'dd-routing-label', 'Routing'));
+    for (const c of routingChoices()) {
+      const b = el('button', `dd-route${(state.settings.aiRouting ?? '') === c.value ? ' active' : ''}${c.admin ? ' admin' : ''}`, escapeHtml(c.label));
+      b.title = c.hint;
+      b.addEventListener('click', () => {
+        if ((state.settings.aiRouting ?? '') === c.value) return;
+        routing.querySelectorAll('.dd-route').forEach((x) => x.classList.remove('active'));
+        b.classList.add('active');
+        list.innerHTML = '';
+        list.appendChild(el('div', 'dd-empty', 'Loading models…'));
+        void setRouting(c.value).then(() => renderList(list, search.value), (e) => { loadError = String(e); renderList(list, search.value); });
+      });
+      routing.appendChild(b);
+    }
+    dropdown.append(search, routing, kinds, list);
     renderList(list, '');
     search.addEventListener('input', () => renderList(list, search.value));
     search.addEventListener('keydown', (e) => {

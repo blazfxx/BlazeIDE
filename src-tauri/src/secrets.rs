@@ -51,3 +51,16 @@ pub fn save_provider_key(id: &str, key: &str) -> Result<(), String> {
 pub fn delete_provider_key(id: &str) {
     delete(&provider_account(id));
 }
+
+/// Other secrets by name (e.g. the Cloudflare tunnel token for Continue on mobile).
+pub fn load_secret(name: &str) -> Option<String> {
+    load(name)
+}
+
+pub fn save_secret(name: &str, value: &str) -> Result<(), String> {
+    save(name, value)
+}
+
+pub fn delete_secret(name: &str) {
+    delete(name);
+}

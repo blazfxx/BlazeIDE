@@ -1,5 +1,6 @@
 // AI panel input area: mode pills, auto-growing textarea, send/cancel button.
 
+import { findModel } from './chatStore';
 import type { AIMode, ElementComment, FileNode, ReasoningEffort } from '../../shared/types';
 import { REASONING_LEVELS } from '../../shared/types';
 import { bus, el, escapeHtml, state } from '../state';
@@ -107,6 +108,74 @@ export function initInput(host: HTMLElement, controller: Controller): void {
   const pinned: string[] = []; // project-relative paths
   const pinChips = el('div', 'ai-pin-chips');
   pinChips.style.display = 'none';
+
+  // --- attached images (paste, or the image button) ------------------------
+  const MAX_IMAGES = 6;
+  const images: string[] = []; // data: URLs
+  const imageChips = el('div', 'ai-image-chips');
+  imageChips.style.display = 'none';
+  function renderImages(): void {
+    imageChips.textContent = '';
+    imageChips.style.display = images.length ? 'flex' : 'none';
+    images.forEach((u, idx) => {
+      const chip = el('div', 'ai-image-chip');
+      const img = el('img') as HTMLImageElement;
+      img.src = u;
+      img.alt = 'Attached image';
+      const x = el('button', 'chip-x', icon(iconClose, 'icon-12'));
+      x.title = 'Remove image';
+      x.addEventListener('click', () => { images.splice(idx, 1); renderImages(); });
+      chip.append(img, x);
+      imageChips.appendChild(chip);
+    });
+    const m = findModel(state.settings.selectedModel);
+    if (images.length && m && !m.tags.includes('custom') && m.vision === false) {
+      imageChips.appendChild(el('span', 'ai-image-warn', `${escapeHtml(m.displayName)} cannot see images: pick a vision model`));
+    }
+  }
+  /** Read an image file, shrinking big ones (max 1600 px, JPEG) so requests stay small. */
+  async function imageToDataUrl(file: Blob): Promise<string | null> {
+    if (!file.type.startsWith('image/')) return null;
+    const raw = await new Promise<string>((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.onerror = () => rej(r.error); r.readAsDataURL(file); });
+    if (file.size <= 1_500_000 && /^image\/(png|jpeg|webp|gif)$/.test(file.type)) return raw;
+    try {
+      const bmp = await createImageBitmap(file);
+      const scale = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
+      const c = document.createElement('canvas');
+      c.width = Math.round(bmp.width * scale);
+      c.height = Math.round(bmp.height * scale);
+      c.getContext('2d')?.drawImage(bmp, 0, 0, c.width, c.height);
+      return c.toDataURL('image/jpeg', 0.85);
+    } catch {
+      return null;
+    }
+  }
+  async function addImageFiles(files: Blob[]): Promise<void> {
+    for (const f of files) {
+      if (images.length >= MAX_IMAGES) break;
+      const u = await imageToDataUrl(f);
+      if (u) images.push(u);
+    }
+    renderImages();
+    bus.emit('focus-ai-input', undefined);
+  }
+  textarea.addEventListener('paste', (e) => {
+    const files = Array.from(e.clipboardData?.items ?? []).filter((i) => i.kind === 'file' && i.type.startsWith('image/')).map((i) => i.getAsFile()).filter((f): f is File => !!f);
+    if (files.length) { e.preventDefault(); void addImageFiles(files); }
+  });
+  textarea.addEventListener('drop', (e) => {
+    const files = Array.from(e.dataTransfer?.files ?? []).filter((f) => f.type.startsWith('image/'));
+    if (files.length) { e.preventDefault(); void addImageFiles(files); }
+  });
+  const imageBtn = el('button', 'ai-image-btn', '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>');
+  imageBtn.title = 'Attach an image (or paste one with Cmd/Ctrl+V)';
+  const imagePick = el('input') as HTMLInputElement;
+  imagePick.type = 'file';
+  imagePick.accept = 'image/*';
+  imagePick.multiple = true;
+  imagePick.style.display = 'none';
+  imagePick.addEventListener('change', () => { void addImageFiles(Array.from(imagePick.files ?? [])); imagePick.value = ''; });
+  imageBtn.addEventListener('click', () => imagePick.click());
 
   function relPath(p: string): string {
     const root = state.projectRoot;
@@ -235,7 +304,8 @@ export function initInput(host: HTMLElement, controller: Controller): void {
     renderStep();
   });
 
-  wrap.append(questionHost, chips, pinChips, toolbar, field);
+  toolbar.appendChild(imageBtn);
+  wrap.append(questionHost, chips, pinChips, imageChips, toolbar, field, imagePick);
   host.appendChild(wrap);
 
   // --- @-mention autocomplete dropdown ---
@@ -383,8 +453,10 @@ export function initInput(host: HTMLElement, controller: Controller): void {
       return;
     }
     const text = textarea.value.trim();
-    // Allow sending with only comments or pinned files queued.
-    if (!text && comments.length === 0 && pinned.length === 0) return;
+    // Allow sending with only comments, pinned files or images queued.
+    if (!text && comments.length === 0 && pinned.length === 0 && images.length === 0) return;
+    const imgs = images.splice(0, images.length);
+    renderImages();
     const block = buildCommentBlock();
     const pins = pinned.slice();
     // Capture display notes BEFORE clearing the queues.
@@ -393,6 +465,7 @@ export function initInput(host: HTMLElement, controller: Controller): void {
       const each = comments.map((c) => `• ${c.comment}`).join('\n');
       notes.push(`Commenting on ${comments.length} selected element${comments.length === 1 ? '' : 's'}:\n${each}`);
     }
+    if (imgs.length > 0 && !text) notes.push(`🖼 ${imgs.length} image${imgs.length === 1 ? '' : 's'}`);
     if (pins.length > 0) notes.push(`📎 ${pins.length} file${pins.length === 1 ? '' : 's'}: ${pins.map((p) => p.split('/').pop()).join(', ')}`);
     textarea.value = '';
     comments.length = 0;
@@ -414,9 +487,9 @@ export function initInput(host: HTMLElement, controller: Controller): void {
         }
       }
       const ctxBlock = fileContext ? `The user attached these files for context:\n${fileContext}\n` : '';
-      const message = `${ctxBlock}${block}${block && text ? '\n' : ''}${text || (block ? 'Apply the changes described in the comments above.' : 'See the attached files.')}`;
+      const message = `${ctxBlock}${block}${block && text ? '\n' : ''}${text || (block ? 'Apply the changes described in the comments above.' : imgs.length ? 'Look at the attached image(s).' : 'See the attached files.')}`;
       const display = text ? (notes.length ? `${text}\n\n${notes.join('\n')}` : text) : notes.join('\n');
-      await controller.send(message, display).finally(renderSendButton);
+      await controller.send(message, display, imgs).finally(renderSendButton);
     })();
     renderSendButton();
   }
@@ -454,6 +527,11 @@ export function initInput(host: HTMLElement, controller: Controller): void {
   bus.on('settings-changed', renderTabs);
   // Mode can change programmatically (e.g. Plan → Agent build handoff).
   bus.on('ai-mode-changed', renderTabs);
+  bus.on('ai-prefill', ({ text }) => {
+    textarea.value = text;
+    autoGrow();
+    textarea.focus();
+  });
   bus.on('focus-ai-input', () => {
     // Layout listens to this too and un-collapses the panel first.
     textarea.focus();

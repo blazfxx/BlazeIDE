@@ -15,7 +15,7 @@ export interface ToolCard {
   setRejected(): void;
 }
 
-function argSummary(call: ToolCall): string {
+export function argSummary(call: ToolCall): string {
   try {
     const parsed: unknown = JSON.parse(call.arguments || '{}');
     if (parsed !== null && typeof parsed === 'object') {

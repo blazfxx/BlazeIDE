@@ -2,6 +2,7 @@
 // window lookup, persistence to <project>/.blazeide, and id/title generation.
 // Kept separate so controller.ts stays focused on stream/loop control flow.
 
+import type { ModelEntry } from '../../shared/types';
 import type { ChatMessage, StoredChat } from '../../shared/types';
 import { state } from '../state';
 
@@ -24,16 +25,28 @@ export function estimateTokens(messages: ChatMessage[]): number {
   return Math.ceil(chars / 4) + (messages.length > 0 ? SYSTEM_OVERHEAD_TOKENS : 0);
 }
 
+/** Model ids differ a little between BlazeAPI's Normal and Direct lists
+ *  (gpt-6-1-sol vs gpt-6.1-sol, payg/ prefix, -trusted suffix); compare them
+ *  in one normal form. */
+export function normModelId(id: string): string {
+  return id.toLowerCase().replace(/^payg\//, '').replace(/-trusted$/, '').replace(/(\d)[-.](\d)/g, '$1.$2');
+}
+
+/** Find a model by id, tolerating the Normal/Direct spelling differences. */
+export function findModel(id: string): ModelEntry | undefined {
+  return state.models.find((x) => x.id === id) ?? state.models.find((x) => x.kind === 'chat' && normModelId(x.id) === normModelId(id));
+}
+
 /** The active model's context window (tokens). Falls back to a safe default. */
 export function activeContextWindow(): number {
-  const DEFAULT = 200_000;
-  const m = state.models.find((x) => x.id === state.settings.selectedModel);
+  const DEFAULT = 128_000;
+  const m = findModel(state.settings.selectedModel);
   return m && m.contextWindow > 0 ? m.contextWindow : DEFAULT;
 }
 
 /** The model name to record on a saved chat. */
 export function activeModelLabel(): string {
-  const m = state.models.find((x) => x.id === state.settings.selectedModel);
+  const m = findModel(state.settings.selectedModel);
   return m?.displayName ?? state.settings.selectedModel;
 }
 

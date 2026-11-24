@@ -1,0 +1,142 @@
+[
+ {
+  "name": "simple",
+  "original": "a\nb\nc\n",
+  "diff": "<<<<<<< SEARCH\nb\n=======\nB\n>>>>>>> REPLACE",
+  "ok": true,
+  "content": "a\nB\nc\n"
+ },
+ {
+  "name": "two blocks in order",
+  "original": "one\ntwo\nthree\nfour\n",
+  "diff": "<<<<<<< SEARCH\ntwo\n=======\n2\n>>>>>>> REPLACE\n<<<<<<< SEARCH\nfour\n=======\n4\n>>>>>>> REPLACE",
+  "ok": true,
+  "content": "one\n2\nthree\n4\n"
+ },
+ {
+  "name": "blocks out of order fail",
+  "original": "one\ntwo\nthree\n",
+  "diff": "<<<<<<< SEARCH\nthree\n=======\n3\n>>>>>>> REPLACE\n<<<<<<< SEARCH\none\n=======\n1\n>>>>>>> REPLACE",
+  "ok": false,
+  "error": "SEARCH block 2 did not match the file. Re-read the file to get its current content, then retry with an exact SEARCH."
+ },
+ {
+  "name": "indent drift matches trimmed",
+  "original": "fn x() {\n    let a = 1;\n    let b = 2;\n}\n",
+  "diff": "<<<<<<< SEARCH\nlet a = 1;\nlet b = 2;\n=======\n    let a = 10;\n    let b = 20;\n>>>>>>> REPLACE",
+  "ok": true,
+  "content": "fn x() {\n    let a = 10;\n    let b = 20;\n}\n"
+ },
+ {
+  "name": "ambiguous trimmed refuses",
+  "original": "x\n  y\nx\n  y\n",
+  "diff": "<<<<<<< SEARCH\n  x\ny\n=======\nz\n>>>>>>> REPLACE",
+  "ok": false,
+  "error": "SEARCH block 1 did not match the file. Re-read the file to get its current content, then retry with an exact SEARCH."
+ },
+ {
+  "name": "no match",
+  "original": "hello\n",
+  "diff": "<<<<<<< SEARCH\nbye\n=======\nx\n>>>>>>> REPLACE",
+  "ok": false,
+  "error": "SEARCH block 1 did not match the file. Re-read the file to get its current content, then retry with an exact SEARCH."
+ },
+ {
+  "name": "empty search replaces file",
+  "original": "old\n",
+  "diff": "<<<<<<< SEARCH\n\n=======\nbrand new\nfile\n>>>>>>> REPLACE",
+  "ok": true,
+  "content": "brand new\nfile"
+ },
+ {
+  "name": "create from empty",
+  "original": "",
+  "diff": "<<<<<<< SEARCH\n\n=======\nfirst\n>>>>>>> REPLACE",
+  "ok": true,
+  "content": "first"
+ },
+ {
+  "name": "crlf preserved",
+  "original": "a\r\nb\r\nc\r\n",
+  "diff": "<<<<<<< SEARCH\nb\n=======\nB\nB2\n>>>>>>> REPLACE",
+  "ok": true,
+  "content": "a\r\nB\r\nB2\r\nc\r\n"
+ },
+ {
+  "name": "start line hint picks second copy",
+  "original": "k\nv\nk\nv\n",
+  "diff": "<<<<<<< SEARCH\n:start_line:3\nk\n=======\nK\n>>>>>>> REPLACE",
+  "ok": true,
+  "content": "k\nv\nK\nv\n"
+ },
+ {
+  "name": "bad hint falls back",
+  "original": "k\nv\n",
+  "diff": "<<<<<<< SEARCH\n:start_line:99\nk\n=======\nK\n>>>>>>> REPLACE",
+  "ok": true,
+  "content": "K\nv\n"
+ },
+ {
+  "name": "fence line allowed",
+  "original": "a\nb\n",
+  "diff": "<<<<<<< SEARCH\n-------\na\n=======\nA\n>>>>>>> REPLACE",
+  "ok": true,
+  "content": "A\nb\n"
+ },
+ {
+  "name": "long markers",
+  "original": "a\nb\n",
+  "diff": "<<<<<<<<<< SEARCH\na\n==========\nA\n>>>>>>>>>> REPLACE",
+  "ok": true,
+  "content": "A\nb\n"
+ },
+ {
+  "name": "missing separator",
+  "original": "a\n",
+  "diff": "<<<<<<< SEARCH\na\n>>>>>>> REPLACE",
+  "ok": false,
+  "error": "Malformed diff: missing \"=======\" between SEARCH and REPLACE."
+ },
+ {
+  "name": "missing close",
+  "original": "a\n",
+  "diff": "<<<<<<< SEARCH\na\n=======\nA",
+  "ok": false,
+  "error": "Malformed diff: missing \">>>>>>> REPLACE\" marker."
+ },
+ {
+  "name": "no blocks",
+  "original": "a\n",
+  "diff": "just text",
+  "ok": false,
+  "error": "No SEARCH/REPLACE blocks found in the diff."
+ },
+ {
+  "name": "unicode content",
+  "original": "héllo wörld\n日本語\nend\n",
+  "diff": "<<<<<<< SEARCH\n日本語\n=======\nにほんご\n>>>>>>> REPLACE",
+  "ok": true,
+  "content": "héllo wörld\nにほんご\nend\n"
+ },
+ {
+  "name": "delete lines",
+  "original": "keep\ndrop1\ndrop2\nkeep2\n",
+  "diff": "<<<<<<< SEARCH\ndrop1\ndrop2\n\n=======\n\n>>>>>>> REPLACE",
+  "ok": true,
+  "content": "keep\nkeep2\n"
+ },
+ {
+  "name": "search marker with angle",
+  "original": "a\n",
+  "diff": "<<<<<<< SEARCH>\na\n=======\nb\n>>>>>>> REPLACE",
+  "ok": true,
+  "content": "b\n"
+ },
+ {
+  "name": "text around blocks ignored",
+  "original": "a\nb\n",
+  "diff": "Here is the change:\n<<<<<<< SEARCH\na\n=======\nx\n>>>>>>> REPLACE\nDone.",
+  "ok": true,
+  "content": "x\nb\n"
+ }
+]

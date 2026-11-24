@@ -95,7 +95,8 @@ pub fn parse_models(body: &Value) -> Vec<ModelEntry> {
     let mut out: Vec<ModelEntry> = rows
         .iter()
         .filter_map(|m| {
-            let id = m.get("id")?.as_str()?.to_string();
+            let mut id = m.get("id")?.as_str()?.to_string();
+            let listed_name = id.clone();
             let kind = match m.get("type").and_then(Value::as_str).unwrap_or("chat") {
                 "chat" => "chat",
                 "image" => "image",
@@ -104,6 +105,13 @@ pub fn parse_models(body: &Value) -> Vec<ModelEntry> {
             };
             if m.get("available_for_account").and_then(Value::as_bool) == Some(false) {
                 return None;
+            }
+            // Video rows are listed under a display name ("Seedance 2.0 (image-to-video)");
+            // the callable id is in model_id ("payg/seedance-2-0-image-to-video").
+            if kind == "video" {
+                if let Some(mid) = m.get("model_id").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+                    id = mid.trim_start_matches("payg/").to_string();
+                }
             }
             let tags_raw = m.get("tags").and_then(Value::as_str).unwrap_or("");
             // Retired plan-only rows are not callable on pay-as-you-go keys.
@@ -114,7 +122,7 @@ pub fn parse_models(body: &Value) -> Vec<ModelEntry> {
             let flat = num("price_in_per_m") == 0.0 && num("price_out_per_m") == 0.0;
             let free = has_tag(tags_raw, "free") || m.get("is_free").and_then(Value::as_bool) == Some(true) || id.starts_with("free/");
             Some(ModelEntry {
-                display_name: display_name(&id),
+                display_name: if kind == "video" && listed_name != id { listed_name } else { display_name(&id) },
                 provider: vendor_for(&id),
                 context_window: m.get("context_window").and_then(Value::as_u64).unwrap_or(0),
                 kind: kind.into(),
@@ -134,10 +142,20 @@ pub fn parse_models(body: &Value) -> Vec<ModelEntry> {
 
 /// The model list. Works signed out too (the catalogue is public), so the
 /// picker is never empty; with a key it reflects what that account can call.
-pub async fn fetch_models(http: &reqwest::Client, api_base: &str, api_key: Option<&str>) -> Result<(Vec<ModelEntry>, Value)> {
-    let mut req = http.get(format!("{api_base}/paid/v1/models")).timeout(Duration::from_secs(15));
+pub async fn fetch_models(http: &reqwest::Client, api_base: &str, api_key: Option<&str>, routing: &str) -> Result<(Vec<ModelEntry>, Value)> {
+    // Normal and Direct list the same models under slightly different ids
+    // (gpt-6-1-sol vs gpt-6.1-sol), so ask for the list the requests will use.
+    let section = match routing {
+        "normal" | "cheapest" => "?section=normal",
+        "direct" => "?section=direct",
+        _ => "",
+    };
+    let mut req = http.get(format!("{api_base}/paid/v1/models{section}")).timeout(Duration::from_secs(15));
     if let Some(k) = api_key {
         req = req.bearer_auth(k);
+    }
+    for (k, v) in crate::ai::routing_headers(routing) {
+        req = req.header(k, v);
     }
     let resp = req.send().await?;
     if !resp.status().is_success() {
@@ -174,14 +192,64 @@ pub fn completion_candidates(models: &[ModelEntry]) -> Vec<String> {
         .collect()
 }
 
-const PREFERRED_IMAGE_MODELS: &[&str] = &["gpt-image-2", "gpt-image-2.5", "gemini-2.5-flash-image", "nano-banana-pro"];
+/// Automatic image model order (2026-11-14): models whose supplier was
+/// actually delivering first. gpt-image-2 / gpt-image-2.5 come last: their
+/// supplier was out of stock when this list was made.
+const PREFERRED_IMAGE_MODELS: &[&str] = &["seedream-4.5", "gemini-2.5-flash-image", "nano-banana-pro", "flux.2-flex", "gpt-5-image-mini", "gpt-image-2.5", "gpt-image-2"];
+
+/// Edit-only models need an input image; the agent only does text-to-image.
+fn is_edit_model(id: &str) -> bool {
+    id.contains("edit")
+}
+
+/// Image models to try, in order: the chosen one first (if the account has
+/// it), then the automatic order, then any other text-to-image model.
+pub fn image_candidates(models: &[ModelEntry], wanted: &str) -> Vec<String> {
+    let usable = |id: &str| models.iter().any(|m| m.id == id && m.kind == "image") && !is_edit_model(id);
+    let mut out: Vec<String> = Vec::new();
+    if !wanted.is_empty() && usable(wanted) {
+        out.push(wanted.to_string());
+    }
+    for p in PREFERRED_IMAGE_MODELS {
+        if usable(p) && !out.iter().any(|x| x == p) {
+            out.push(p.to_string());
+        }
+    }
+    for m in models.iter().filter(|m| m.kind == "image" && !is_edit_model(&m.id)) {
+        if !out.contains(&m.id) {
+            out.push(m.id.clone());
+        }
+    }
+    out
+}
 
 pub fn pick_image_model(models: &[ModelEntry]) -> Option<String> {
-    PREFERRED_IMAGE_MODELS
-        .iter()
-        .find(|p| models.iter().any(|m| m.id == **p))
-        .map(|s| s.to_string())
-        .or_else(|| models.iter().find(|m| m.kind == "image").map(|m| m.id.clone()))
+    image_candidates(models, "").into_iter().next()
+}
+
+/// One BlazeAPI supplier (codename) that serves a model.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SupplierEntry {
+    pub id: String,
+    pub status: String,
+    pub price: f64,
+}
+
+/// Suppliers for a model (public `/api/v1/providers?model=`, Normal routing).
+pub async fn fetch_suppliers(http: &reqwest::Client, site: &str, model: &str) -> Result<Vec<SupplierEntry>> {
+    let resp = http.get(format!("{site}/api/v1/providers")).query(&[("model", model)]).timeout(Duration::from_secs(10)).send().await?;
+    if !resp.status().is_success() {
+        return Err(Error::Http { status: resp.status().as_u16(), message: "Could not load the suppliers for this model".into() });
+    }
+    let v: Value = resp.json().await?;
+    Ok(v.get("data").and_then(Value::as_array).map(|rows| {
+        rows.iter().filter_map(|r| Some(SupplierEntry {
+            id: r.get("id")?.as_str()?.to_string(),
+            status: r.get("status").and_then(Value::as_str).unwrap_or("").to_string(),
+            price: r.get("base_fee_usd").and_then(Value::as_f64).unwrap_or(0.0),
+        })).collect()
+    }).unwrap_or_default())
 }
 
 fn size_for(model: &str, aspect: Option<&str>) -> Option<&'static str> {
@@ -198,6 +266,10 @@ fn size_for(model: &str, aspect: Option<&str>) -> Option<&'static str> {
 /// What to generate and where to save it (inside `root`).
 pub struct ImageJob<'a> {
     pub model: Option<String>,
+    /// BlazeAPI supplier codename to force; None = automatic.
+    pub supplier: Option<&'a str>,
+    /// Routing choice ("normal", "direct", "cheapest", "" = account).
+    pub routing: &'a str,
     pub root: &'a Path,
     pub rel_path: &'a str,
     pub prompt: &'a str,
@@ -207,7 +279,7 @@ pub struct ImageJob<'a> {
 /// Generate an image and save it inside the project. Returns the tool-result
 /// text for the model (never Err, so the agent can carry on).
 pub async fn generate_image(http: &reqwest::Client, api_base: &str, api_key: &str, job: ImageJob<'_>) -> String {
-    let ImageJob { model, root, rel_path, prompt, aspect } = job;
+    let ImageJob { model, supplier, routing, root, rel_path, prompt, aspect } = job;
     if prompt.trim().is_empty() {
         return "Error: a prompt is required.".into();
     }
@@ -220,14 +292,16 @@ pub async fn generate_image(http: &reqwest::Client, api_base: &str, api_key: &st
     if let Some(size) = size_for(&model, aspect) {
         body["size"] = json!(size);
     }
-    let resp = match http
-        .post(format!("{api_base}/paid/v1/images/generations"))
-        .bearer_auth(api_key)
-        .json(&body)
-        .timeout(Duration::from_secs(180))
-        .send()
-        .await
-    {
+    let mut post = http.post(format!("{api_base}/paid/v1/images/generations")).bearer_auth(api_key).json(&body).timeout(Duration::from_secs(180));
+    if let Some(s) = supplier.filter(|s| !s.is_empty()) {
+        // Forcing a supplier is a Normal-routing feature.
+        post = post.header("X-Blaze-Routing", "basic").header("X-Blaze-Provider", s);
+    } else {
+        for (k, v) in crate::ai::routing_headers(routing) {
+            post = post.header(k, v);
+        }
+    }
+    let resp = match post.send().await {
         Ok(r) => r,
         Err(e) => return format!("Error: {}", Error::from(e)),
     };
@@ -265,6 +339,114 @@ pub async fn generate_image(http: &reqwest::Client, api_base: &str, api_key: &st
     format!("Saved image to {rel_path} ({} KB) using {model}. Reference it from your HTML/CSS at that path.", bytes.len() / 1024)
 }
 
+/// Automatic video model order, fast + good value first. Image-to-video when the
+/// agent passes a still, text-to-video when it does not.
+const PREFERRED_IMAGE_VIDEO: &[&str] = &["seedance-2-0-fast-image-to-video", "wan-2-6-flash-image-to-video", "kling-o3-standard-image-to-video", "seedance-2-0-image-to-video", "kling-v3-turbo-standard-image-to-video", "wan-2-7-image-to-video", "veo3-1-fast-image-to-video", "kling-2-6-pro-image-to-video"];
+const PREFERRED_TEXT_VIDEO: &[&str] = &["kling-o3-standard-text-to-video", "ltx-2-v2-3-fast-text-to-video", "wan-2-5-preview-text-to-video", "kling-v3-standard-text-to-video", "seedance-1-5-pro-text-to-video", "wan-2-7-text-to-video", "veo3-1-fast-text-to-video", "kling-2-6-pro-text-to-video"];
+
+/// Does this video model take a starting image (image-to-video) rather than text only?
+pub fn video_takes_image(id: &str) -> bool {
+    !id.contains("text-to-video")
+}
+
+pub fn video_candidates(models: &[ModelEntry], wanted: &str, with_image: bool) -> Vec<String> {
+    let fits = |id: &str| if with_image { id.contains("image-to-video") } else { id.contains("text-to-video") };
+    let has = |id: &str| fits(id) && models.iter().any(|m| m.id == id && m.kind == "video");
+    let preferred = if with_image { PREFERRED_IMAGE_VIDEO } else { PREFERRED_TEXT_VIDEO };
+    let mut out: Vec<String> = Vec::new();
+    if !wanted.is_empty() && has(wanted) {
+        out.push(wanted.to_string());
+    }
+    for p in preferred {
+        if has(p) && !out.iter().any(|x| x == p) {
+            out.push(p.to_string());
+        }
+    }
+    for m in models.iter().filter(|m| m.kind == "video" && fits(&m.id)) {
+        if !out.contains(&m.id) {
+            out.push(m.id.clone());
+        }
+    }
+    out
+}
+
+/// What to animate and where to save the clip (inside `root`).
+pub struct VideoJob<'a> {
+    pub model: &'a str,
+    pub root: &'a Path,
+    /// None = text-to-video.
+    pub image_rel: Option<&'a str>,
+    pub rel_path: &'a str,
+    pub prompt: &'a str,
+    pub routing: &'a str,
+}
+
+const MAX_VIDEO_SOURCE: u64 = 12 * 1024 * 1024;
+
+/// Animate a project image into a clip with a BlazeAPI video model (POST
+/// /paid/v1/video/generations, answer = base64 mp4). Returns the tool-result
+/// text; "Error: video generation failed" means another model may work.
+pub async fn generate_video(http: &reqwest::Client, api_base: &str, api_key: &str, job: VideoJob<'_>) -> String {
+    let VideoJob { model, root, image_rel, rel_path, prompt, routing } = job;
+    let dest = match resolve_in(root, rel_path) {
+        Ok(p) => p,
+        Err(e) => return format!("Error: {e}"),
+    };
+    let mut body = json!({ "model": model, "prompt": if prompt.trim().is_empty() { "subtle cinematic motion" } else { prompt } });
+    if let Some(image_rel) = image_rel {
+        let src = match resolve_in(root, image_rel) {
+            Ok(p) => p,
+            Err(e) => return format!("Error: {e}"),
+        };
+        let meta = match std::fs::metadata(&src) {
+            Ok(m) if m.is_file() => m,
+            _ => return format!("Error: the image {image_rel} does not exist. Create it with generate_image first, or leave `image` out for text-to-video."),
+        };
+        if meta.len() > MAX_VIDEO_SOURCE {
+            return "Error: the source image is larger than 12 MB; use a smaller image.".into();
+        }
+        let mime = match src.extension().and_then(|e| e.to_str()).map(|e| e.to_lowercase()).as_deref() {
+            Some("png") => "image/png",
+            Some("jpg" | "jpeg") => "image/jpeg",
+            Some("webp") => "image/webp",
+            _ => return "Error: the source must be a .png, .jpg or .webp image.".into(),
+        };
+        let bytes = match std::fs::read(&src) {
+            Ok(b) => b,
+            Err(e) => return format!("Error: {e}"),
+        };
+        body["image_url"] = json!(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(&bytes)));
+    } else if prompt.trim().is_empty() {
+        return "Error: text-to-video needs a prompt describing the clip.".into();
+    }
+    let mut post = http.post(format!("{api_base}/paid/v1/video/generations")).bearer_auth(api_key).json(&body).timeout(Duration::from_secs(660));
+    for (k, v) in crate::ai::routing_headers(routing) {
+        post = post.header(k, v);
+    }
+    let resp = match post.send().await {
+        Ok(r) => r,
+        Err(e) => return format!("Error: video generation failed ({}).", Error::from(e)),
+    };
+    let status = resp.status();
+    let v: Value = resp.json().await.unwrap_or_default();
+    let item = &v["data"][0];
+    let Some(b64) = item.get("b64_json").and_then(Value::as_str).filter(|_| status.is_success()) else {
+        let msg = v.get("error").and_then(|e| e.get("message").and_then(Value::as_str).or_else(|| e.as_str())).unwrap_or("no video returned");
+        return format!("Error: video generation failed ({msg}).");
+    };
+    let Ok(clip) = base64::engine::general_purpose::STANDARD.decode(b64) else { return "Error: video generation failed (invalid video data).".into() };
+    if let Some(parent) = dest.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            return format!("Error: {e}");
+        }
+    }
+    if let Err(e) = std::fs::write(&dest, &clip) {
+        return format!("Error: {e}");
+    }
+    let secs = item.get("seconds").and_then(Value::as_f64).map(|s| format!(", {s} s")).unwrap_or_default();
+    format!("Saved video to {rel_path} ({} KB{secs}) using {model}. Use it with <video src=\"{rel_path}\" autoplay muted loop playsinline>.", clip.len() / 1024)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,12 +474,25 @@ mod tests {
         ]});
         let m = parse_models(&body);
         assert_eq!(m.iter().map(|x| x.id.as_str()).collect::<Vec<_>>(), vec!["gpt-image-2", "veo-3", "glm-5.3", "free/glm-5.3"]);
+        let vids = parse_models(&json!({"data":[{"id":"Seedance 2.0 (image-to-video)","model_id":"payg/seedance-2-0-image-to-video","type":"video","min_charge_usd":0.29,"tags":"payg,flat"}]}));
+        assert_eq!((vids[0].id.as_str(), vids[0].display_name.as_str()), ("seedance-2-0-image-to-video", "Seedance 2.0 (image-to-video)"));
+        assert_eq!(video_candidates(&vids, "", true), vec!["seedance-2-0-image-to-video"]);
+        assert!(video_candidates(&vids, "", false).is_empty());
+        assert!(video_takes_image("kling-o3-standard-reference-to-video") && !video_takes_image("kling-o3-standard-text-to-video"));
         assert!(m[3].free && m[3].price_in == 0.0);
         assert_eq!(m[1].kind, "video");
         assert!(!m[2].free);
         assert_eq!(m[0].price_in, 0.005);
         assert_eq!(completion_candidates(&m), vec!["glm-5.3", "free/glm-5.3"]);
         assert_eq!(pick_image_model(&m).as_deref(), Some("gpt-image-2"));
+        let imgs = vec![
+            ModelEntry { id: "gpt-image-2".into(), display_name: String::new(), provider: String::new(), context_window: 0, kind: "image".into(), vision: false, free: false, price_in: 0.0, price_out: 0.0, tags: vec![] },
+            ModelEntry { id: "seedream-4.5".into(), display_name: String::new(), provider: String::new(), context_window: 0, kind: "image".into(), vision: false, free: false, price_in: 0.0, price_out: 0.0, tags: vec![] },
+            ModelEntry { id: "qwen-image-2-edit".into(), display_name: String::new(), provider: String::new(), context_window: 0, kind: "image".into(), vision: false, free: false, price_in: 0.0, price_out: 0.0, tags: vec![] },
+        ];
+        assert_eq!(image_candidates(&imgs, ""), vec!["seedream-4.5", "gpt-image-2"]);
+        assert_eq!(image_candidates(&imgs, "gpt-image-2"), vec!["gpt-image-2", "seedream-4.5"]);
+        assert_eq!(image_candidates(&imgs, "gone"), vec!["seedream-4.5", "gpt-image-2"]);
         assert_eq!(size_for("gpt-image-2", Some("16:9")), Some("1536x1024"));
         assert_eq!(size_for("nano-banana-pro", Some("16:9")), None);
     }

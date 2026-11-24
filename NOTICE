@@ -9,3 +9,16 @@ LICENSE) with it, and state clearly where you changed it. See LICENSE
 
 The "Blaze", "BlazeAPI" and "Blaze IDE" names and logos are not licensed for
 use as the name of a derived product (Apache-2.0 section 6).
+
+BlBots (crates/blaze-core/src/bots) and the design of Continue on mobile's
+relay follow the design of OpenMausBot, https://github.com/milind-soni/OpenMausBot,
+licensed under the Apache License 2.0. No code from its enterprise/ folder is
+used. The OpenMausBot and MausBot names and mascot are not used in this product.
+
+The bot desktop image (crates/blaze-core/src/bots/desktop.Dockerfile) is built
+on the user's computer from Debian packages (XFCE, Firefox ESR, noVNC, x11vnc,
+xdotool, scrot), each under its own license.
+
+Continue on mobile's quick tunnels download cloudflared
+(https://github.com/cloudflare/cloudflared, Apache License 2.0) from
+Cloudflare's releases, checked against a pinned SHA-256.

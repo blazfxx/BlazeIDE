@@ -2,9 +2,12 @@
 //! crate wires it to windows, menus, the OS keychain and the webview.
 
 mod analytics;
+mod blbots;
+mod cli_install;
 mod commands;
 mod media;
 mod menu;
+mod mobile;
 mod secrets;
 mod windows;
 
@@ -39,6 +42,13 @@ pub struct AppState {
     pub signin: Mutex<Option<CancellationToken>>,
     /// The update found by the last check, kept for the install step.
     pub update: Mutex<Option<tauri_plugin_updater::Update>>,
+    /// An update downloaded (and signature-checked) in the background, waiting
+    /// to be installed: on Restart, or when the app quits (Windows).
+    pub update_ready: Mutex<Option<(tauri_plugin_updater::Update, Vec<u8>)>>,
+    /// Last dev server shown through `blazeweb:` (for root-relative URLs).
+    pub web_last: Mutex<Option<String>>,
+    /// The app's copies of picked backgrounds / ambient audio (see media_store).
+    pub media_dir: std::path::PathBuf,
 }
 
 impl AppState {
@@ -68,6 +78,13 @@ pub fn run() {
                 responder.respond(media::handle(&state.sandbox, &request));
             });
         })
+        .register_asynchronous_uri_scheme_protocol("blazeweb", |ctx, request, responder| {
+            let app = ctx.app_handle().clone();
+            std::thread::spawn(move || {
+                let state = app.state::<AppState>();
+                responder.respond(media::proxy(&state.http_custom, &state.web_last, &request));
+            });
+        })
         .setup(|app| {
             let dir = app.path().app_config_dir()?;
             let store = Store::open(&dir);
@@ -76,6 +93,18 @@ pub fn run() {
             for p in store.recent_projects() {
                 let _ = sandbox.grant_root(Path::new(&p));
             }
+            // Picked backgrounds/audio live in the app's media folder, which is
+            // readable on every launch (they used to vanish after a restart).
+            let media_dir = blaze_core::media_store::media_dir(&dir);
+            let _ = sandbox.grant_media_dir(&media_dir);
+            let (patch, legacy) = blaze_core::media_store::migrate(&media_dir, &store.settings());
+            if !patch.is_empty() {
+                let _ = store.patch_settings(patch);
+            }
+            for p in legacy {
+                let _ = sandbox.grant_picked_file(&p);
+            }
+            blaze_core::media_store::prune(&media_dir, &blaze_core::media_store::referenced(&store.settings()));
             app.manage(AppState {
                 sandbox,
                 store,
@@ -91,12 +120,20 @@ pub fn run() {
                 ai_requests: Mutex::new(HashMap::new()),
                 signin: Mutex::new(None),
                 update: Mutex::new(None),
+                update_ready: Mutex::new(None),
+                web_last: Mutex::new(None),
+                media_dir,
             });
             let handle = app.handle().clone();
             app.set_menu(menu::build(&handle)?)?;
             app.on_menu_event(|app, ev| menu::on_event(app, ev.id().as_ref()));
             windows::open(&handle, None)?;
             commands::on_launch(&handle);
+            // Continue on mobile: start the phone server if the user turned it on.
+            let h2 = handle.clone();
+            tauri::async_runtime::spawn(async move { mobile::apply(&h2).await });
+            // BlBots routines and check-backs run while the app is open.
+            blbots::start_scheduler(&handle);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -107,6 +144,8 @@ pub fn run() {
             commands::auth_get_usage,
             commands::check_version,
             commands::install_update,
+            commands::auto_update,
+            commands::apply_update,
             commands::fs_open_folder,
             commands::fs_read_tree,
             commands::fs_read_file,
@@ -131,6 +170,7 @@ pub fn run() {
             commands::ai_refresh_models,
             commands::ai_run_tool,
             commands::ai_generate_media,
+            commands::ai_image_suppliers,
             commands::ai_complete,
             commands::providers_list,
             commands::providers_save,
@@ -149,6 +189,29 @@ pub fn run() {
             commands::settings_set,
             commands::open_external,
             commands::pick_media,
+            commands::cli_status,
+            blbots::bots_list,
+            blbots::bots_save,
+            blbots::bots_delete,
+            blbots::bots_duplicate,
+            blbots::bots_threads,
+            blbots::bots_thread,
+            blbots::bots_set_memory,
+            blbots::bots_send,
+            blbots::bots_cancel,
+            blbots::bots_answer,
+            blbots::rooms_save,
+            blbots::rooms_delete,
+            blbots::rooms_get,
+            blbots::rooms_send,
+            blbots::bots_computer,
+            commands::cli_install,
+            commands::mobile_status,
+            commands::mobile_set_password,
+            commands::mobile_configure,
+            commands::mobile_set_tunnel_token,
+            commands::mobile_pair_qr,
+            commands::mobile_revoke,
             commands::win_new,
             commands::win_open_file,
         ])
@@ -159,6 +222,13 @@ pub fn run() {
                 let state = app.state::<AppState>();
                 state.pty.kill_all();
                 state.watch.unwatch_all();
+                // A background-downloaded update that was not installed yet
+                // (Windows: the installer must close the app) goes in now, so
+                // the next start is the new version.
+                let ready = state.update_ready.lock().ok().and_then(|mut g| g.take());
+                if let Some((update, bytes)) = ready {
+                    let _ = update.install(&bytes);
+                }
             }
         });
 }

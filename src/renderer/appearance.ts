@@ -39,7 +39,10 @@ export function applyAppearance(s: AppSettings): void {
 
   // Image layer (body::before) — only when no video is set.
   if (hasImage && s.backgroundImage) {
-    const safe = s.backgroundImage.replace(/"/g, '\\"');
+    // A stored file path (served by the sandboxed blazemedia: protocol), or a
+    // small data URL saved by versions before 0.1.20.
+    const src = s.backgroundImage.startsWith('data:') ? s.backgroundImage : window.void.mediaUrl(s.backgroundImage);
+    const safe = src.replace(/["\\\n\r]/g, (c) => encodeURIComponent(c));
     root.style.setProperty('--bg-image', `url("${safe}")`);
   } else {
     root.style.setProperty('--bg-image', 'none');
@@ -88,18 +91,34 @@ function clearAutoContrast(): void {
 // painted onto a canvas. WebKit (macOS) draws its own play button on any
 // <video> it lays out and thinks is paused; a detached element has no such
 // overlay, and a canvas has nothing to overlay.
+//
+// Painting happens once per NEW video frame (requestVideoFrameCallback where
+// the engine has it, otherwise rAF capped at 30 fps), and stops entirely
+// while the window is hidden, so a looping wallpaper costs little CPU.
 let bgVideo: HTMLVideoElement | null = null;
 let bgFrame = 0;
+let bgVideoFrame = 0;
+let bgStop: (() => void) | null = null;
+
+type FrameVideo = HTMLVideoElement & {
+  requestVideoFrameCallback?: (cb: () => void) => number;
+  cancelVideoFrameCallback?: (id: number) => void;
+};
 
 function stopVideo(): void {
+  bgStop?.();
+  bgStop = null;
   cancelAnimationFrame(bgFrame);
   bgFrame = 0;
   if (bgVideo) {
+    const v = bgVideo as FrameVideo;
+    if (bgVideoFrame && v.cancelVideoFrameCallback) v.cancelVideoFrameCallback(bgVideoFrame);
     bgVideo.pause();
     bgVideo.removeAttribute('src');
     bgVideo.load();
     bgVideo = null;
   }
+  bgVideoFrame = 0;
   document.getElementById(VIDEO_ID)?.remove();
 }
 
@@ -108,8 +127,8 @@ function applyVideo(src: string | null): void {
     stopVideo();
     return;
   }
-  // Served by the sandboxed blazemedia: protocol (only picked files and files
-  // inside an open project are readable).
+  // Served by the sandboxed blazemedia: protocol (project files and the app's
+  // own media folder only).
   const url = window.void.mediaUrl(src);
   let canvas = document.getElementById(VIDEO_ID) as HTMLCanvasElement | null;
   if (!canvas || !bgVideo) {
@@ -119,33 +138,65 @@ function applyVideo(src: string | null): void {
     canvas.setAttribute('aria-hidden', 'true');
     // Insert as the first child of <body> so it sits behind #app (z-index 0).
     document.body.insertBefore(canvas, document.body.firstChild);
-    const video = document.createElement('video');
+    const video = document.createElement('video') as FrameVideo;
     video.muted = true;
     video.loop = true;
     video.autoplay = true;
     video.playsInline = true;
+    video.preload = 'auto';
     video.setAttribute('muted', '');
     video.setAttribute('playsinline', '');
     video.disablePictureInPicture = true;
     video.disableRemotePlayback = true;
-    const kick = (): void => { if (video.paused) void video.play().catch(() => {}); };
-    video.addEventListener('loadeddata', kick);
-    video.addEventListener('canplay', kick);
-    video.addEventListener('pause', () => setTimeout(kick, 0));
-    document.addEventListener('visibilitychange', () => { if (!document.hidden) kick(); });
     bgVideo = video;
     const ctx = canvas.getContext('2d');
-    const draw = (): void => {
-      bgFrame = requestAnimationFrame(draw);
-      const c = canvas as HTMLCanvasElement;
-      if (!ctx || !bgVideo || bgVideo.readyState < 2 || bgVideo.videoWidth === 0) return;
-      const k = Math.min(1, 1920 / bgVideo.videoWidth);
-      const w = Math.round(bgVideo.videoWidth * k);
-      const h = Math.round(bgVideo.videoHeight * k);
+    const c = canvas;
+    const paint = (): void => {
+      if (!ctx || bgVideo !== video || video.readyState < 2 || video.videoWidth === 0) return;
+      const k = Math.min(1, 1920 / video.videoWidth);
+      const w = Math.round(video.videoWidth * k);
+      const h = Math.round(video.videoHeight * k);
       if (c.width !== w || c.height !== h) { c.width = w; c.height = h; }
-      ctx.drawImage(bgVideo, 0, 0, w, h);
+      ctx.drawImage(video, 0, 0, w, h);
     };
-    bgFrame = requestAnimationFrame(draw);
+    let last = 0;
+    const loop = (): void => {
+      if (bgVideo !== video || document.hidden) return;
+      if (video.requestVideoFrameCallback) {
+        bgVideoFrame = video.requestVideoFrameCallback(() => { paint(); loop(); });
+      } else {
+        bgFrame = requestAnimationFrame((t) => {
+          if (t - last >= 33) { last = t; paint(); }
+          loop();
+        });
+      }
+    };
+    const kick = (): void => {
+      if (bgVideo !== video || document.hidden) return;
+      if (video.paused) void video.play().catch(() => {});
+    };
+    const onVisible = (): void => {
+      if (document.hidden) {
+        video.pause();
+        cancelAnimationFrame(bgFrame);
+        if (bgVideoFrame && video.cancelVideoFrameCallback) video.cancelVideoFrameCallback(bgVideoFrame);
+        bgFrame = 0;
+        bgVideoFrame = 0;
+      } else {
+        kick();
+        if (!bgFrame && !bgVideoFrame) loop();
+      }
+    };
+    const onPause = (): void => { setTimeout(kick, 0); };
+    video.addEventListener('loadeddata', () => { paint(); kick(); });
+    video.addEventListener('canplay', kick);
+    video.addEventListener('pause', onPause);
+    document.addEventListener('visibilitychange', onVisible);
+    bgStop = () => {
+      video.removeEventListener('pause', onPause);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+    loop();
   }
   if (bgVideo && bgVideo.getAttribute('data-src') !== url) {
     bgVideo.setAttribute('data-src', url);

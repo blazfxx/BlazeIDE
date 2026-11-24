@@ -36,6 +36,12 @@
   color: var(--text-secondary);
   opacity: 0.9;
 }
+#titlebar .titlebar-bots {
+  position: absolute; right: 40px; top: 50%; transform: translateY(-50%);
+  height: 22px; padding: 0 10px; font-size: 12px; border-radius: 6px;
+  background: transparent; border: 1px solid var(--border, #333); color: var(--text-secondary);
+}
+#titlebar .titlebar-bots:hover { color: var(--text-primary); background: var(--bg-hover); }
 #titlebar .titlebar-settings:hover { color: var(--text-primary); opacity: 1; background: var(--bg-hover); }
 
 /* ---- main row ---- */

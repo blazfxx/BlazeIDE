@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::error::{Error, Result};
 use crate::prompts::system_prompt;
-use crate::tools::tools_for;
+use crate::tools::tools_for_opts;
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -23,7 +23,7 @@ pub struct ToolCall {
     pub extra: Option<Map<String, Value>>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatMessage {
     pub role: String,
@@ -33,9 +33,18 @@ pub struct ChatMessage {
     pub tool_call_id: Option<String>,
     #[serde(default)]
     pub tool_calls: Option<Vec<ToolCall>>,
+    /// The model's thinking for this turn (`reasoning_content`). Thinking
+    /// models (DeepSeek, Kimi, GLM...) reject the next request of a tool loop
+    /// unless it is sent back with the assistant's tool calls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
+    /// Images attached to a user message (data: URLs): pasted pictures and
+    /// the agent's browser screenshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub images: Option<Vec<String>>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiRequest {
     pub request_id: String,
@@ -48,6 +57,23 @@ pub struct AiRequest {
     pub reasoning_effort: Option<String>,
     #[serde(default)]
     pub media_gen: Option<bool>,
+    /// Offer generate_video (set by the shell from the aiVideoGen setting).
+    #[serde(default)]
+    pub video_gen: Option<bool>,
+    /// Leave out `reasoning_content` on replayed turns (set after a provider
+    /// rejected it).
+    #[serde(default)]
+    pub no_reasoning_echo: bool,
+    /// Extra system instructions appended to the built-in prompt (a bot's
+    /// personality and memory, the CLI's environment). Never from the webview.
+    #[serde(skip)]
+    pub extra_system: Option<String>,
+    /// Extra tool schemas (bot tools such as `remember` or `hand_off`).
+    #[serde(skip)]
+    pub extra_tools: Vec<Value>,
+    /// Built-in tools to leave out (e.g. `browser` where there is no preview).
+    #[serde(skip)]
+    pub exclude_tools: Vec<String>,
 }
 
 /// Mirrors the UI's `AIStreamEvent` minus `requestId` (added by the caller).
@@ -55,6 +81,7 @@ pub struct AiRequest {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamEvent {
     Text { text: String },
+    Reasoning { text: String },
     ToolDelta {
         index: u32,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -98,8 +125,31 @@ pub fn validate(req: &AiRequest) -> Result<()> {
     Ok(())
 }
 
-fn wire_message(m: &ChatMessage) -> Value {
+/// Images kept per request: only the newest ones are sent (older ones become
+/// a short note), so screenshots do not pile up in every later request.
+const MAX_IMAGE_MESSAGES: usize = 3;
+const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
+
+fn wire_message(m: &ChatMessage, echo_reasoning: bool, with_images: bool) -> Value {
     let mut w = json!({ "role": m.role, "content": m.content });
+    if m.role == "user" {
+        if let Some(imgs) = m.images.as_ref().filter(|v| !v.is_empty()) {
+            if with_images {
+                let mut parts = vec![json!({ "type": "text", "text": if m.content.is_empty() { "(image)" } else { m.content.as_str() } })];
+                for url in imgs.iter().filter(|u| u.starts_with("data:image/") && u.len() <= MAX_IMAGE_BYTES) {
+                    parts.push(json!({ "type": "image_url", "image_url": { "url": url } }));
+                }
+                w["content"] = Value::Array(parts);
+            } else {
+                w["content"] = json!(format!("{}\n[{} earlier image(s) omitted]", m.content, imgs.len()));
+            }
+        }
+    }
+    if echo_reasoning && m.role == "assistant" {
+        if let Some(r) = m.reasoning.as_deref().filter(|r| !r.is_empty()) {
+            w["reasoning_content"] = json!(r);
+        }
+    }
     if m.role == "tool" {
         if let Some(id) = &m.tool_call_id {
             w["tool_call_id"] = json!(id);
@@ -132,16 +182,39 @@ pub fn build_body(req: &AiRequest) -> Value {
     let effort = req.reasoning_effort.clone().unwrap_or_else(|| "medium".into());
     let mut messages: Vec<Value> = Vec::with_capacity(req.messages.len() + 1);
     if !req.messages.iter().any(|m| m.role == "system") {
-        messages.push(json!({ "role": "system", "content": system_prompt(&req.mode, req.filename.as_deref(), &effort) }));
+        let mut sys = system_prompt(&req.mode, req.filename.as_deref(), &effort);
+        if let Some(extra) = req.extra_system.as_deref().filter(|e| !e.trim().is_empty()) {
+            sys.push_str("\n\n");
+            sys.push_str(extra);
+        }
+        messages.push(json!({ "role": "system", "content": sys }));
     }
-    messages.extend(req.messages.iter().map(wire_message));
+    // Thinking is echoed back only for the assistant tool-call turns since the
+    // last user message: that is what thinking models require, and older turns
+    // would only cost tokens.
+    let last_user = req.messages.iter().rposition(|m| m.role == "user" && !m.images.as_ref().is_some_and(|v| !v.is_empty())).unwrap_or(0);
+    // Indices of the newest messages that carry images.
+    let image_msgs: Vec<usize> = req.messages.iter().enumerate().filter(|(_, m)| m.images.as_ref().is_some_and(|v| !v.is_empty())).map(|(i, _)| i).collect();
+    let keep_from = image_msgs.len().saturating_sub(MAX_IMAGE_MESSAGES);
+    let keep: std::collections::HashSet<usize> = image_msgs[keep_from..].iter().copied().collect();
+    messages.extend(req.messages.iter().enumerate().map(|(i, m)| {
+        let echo = !req.no_reasoning_echo && i > last_user && m.tool_calls.as_ref().is_some_and(|c| !c.is_empty());
+        wire_message(m, echo, keep.contains(&i))
+    }));
     let mut body = json!({
         "model": req.model,
         "messages": messages,
         "stream": true,
         "stream_options": { "include_usage": true },
     });
-    if let Some(tools) = tools_for(&req.mode, req.media_gen != Some(false)) {
+    let mut tools = tools_for_opts(&req.mode, req.media_gen != Some(false), req.video_gen == Some(true));
+    if let Some(t) = tools.as_mut() {
+        t.retain(|tool| !req.exclude_tools.iter().any(|x| tool["function"]["name"] == x.as_str()));
+        t.extend(req.extra_tools.iter().cloned());
+    } else if !req.extra_tools.is_empty() {
+        tools = Some(req.extra_tools.clone());
+    }
+    if let Some(tools) = tools.filter(|t| !t.is_empty()) {
         body["tools"] = Value::Array(tools);
     }
     if effort != "off" {
@@ -163,6 +236,8 @@ struct Pending {
 pub struct SseParser {
     buf: Vec<u8>,
     pending: BTreeMap<u32, Pending>,
+    /// An error object the gateway sent inside the stream.
+    pub error: Option<String>,
 }
 
 impl SseParser {
@@ -188,12 +263,19 @@ impl SseParser {
                 out.push(StreamEvent::Usage { input_tokens: i, output_tokens: o });
             }
         }
-        // A mid-stream error object from the gateway.
+        // A mid-stream error object from the gateway: remembered so the caller
+        // can report it as an error (and the agent can retry), not as text.
         if let Some(msg) = v.get("error").and_then(|e| e.get("message").and_then(Value::as_str).or_else(|| e.as_str())) {
-            out.push(StreamEvent::Text { text: format!("\n\n[error: {msg}]") });
+            self.error = Some(msg.to_string());
             return;
         }
         let Some(delta) = v.get("choices").and_then(|c| c.get(0)).and_then(|c| c.get("delta")) else { return };
+        for k in ["reasoning_content", "reasoning"] {
+            if let Some(t) = delta.get(k).and_then(Value::as_str).filter(|t| !t.is_empty()) {
+                out.push(StreamEvent::Reasoning { text: t.to_string() });
+                break;
+            }
+        }
         if let Some(t) = delta.get("content").and_then(Value::as_str).filter(|t| !t.is_empty()) {
             out.push(StreamEvent::Text { text: t.to_string() });
         }
@@ -256,14 +338,31 @@ pub struct Target<'a> {
     pub url: String,
     pub key: Option<&'a str>,
     pub branded: bool,
+    /// Extra headers (BlazeAPI routing choice).
+    pub headers: Vec<(&'static str, String)>,
+}
+
+/// BlazeAPI routing headers for a routing choice: "normal", "direct",
+/// "cheapest" (Normal routing, cheapest supplier first); anything else = the
+/// account's own setting (no header).
+pub fn routing_headers(routing: &str) -> Vec<(&'static str, String)> {
+    match routing {
+        "normal" => vec![("X-Blaze-Routing", "basic".into())],
+        "direct" => vec![("X-Blaze-Routing", "trusted".into())],
+        "cheapest" => vec![("X-Blaze-Routing", "basic".into()), ("X-Blaze-Provider", "cheapest".into())],
+        _ => Vec::new(),
+    }
 }
 
 impl<'a> Target<'a> {
     pub fn blaze(api_base: &str, key: &'a str) -> Self {
-        Target { url: format!("{api_base}/paid/v1/chat/completions"), key: Some(key), branded: true }
+        Target { url: format!("{api_base}/paid/v1/chat/completions"), key: Some(key), branded: true, headers: Vec::new() }
+    }
+    pub fn blaze_routed(api_base: &str, key: &'a str, routing: &str) -> Self {
+        Target { headers: routing_headers(routing), ..Self::blaze(api_base, key) }
     }
     pub fn custom(base_url: &str, key: Option<&'a str>) -> Self {
-        Target { url: format!("{}/chat/completions", base_url.trim_end_matches('/')), key, branded: false }
+        Target { url: format!("{}/chat/completions", base_url.trim_end_matches('/')), key, branded: false, headers: Vec::new() }
     }
 }
 
@@ -295,11 +394,12 @@ pub async fn stream_chat(
     mut emit: impl FnMut(StreamEvent),
 ) -> Result<()> {
     validate(req)?;
-    let body = serde_json::to_vec(&build_body(req))?;
+    let mut body = serde_json::to_vec(&build_body(req))?;
     if body.len() > MAX_BODY_BYTES {
         return Err(Error::msg("This conversation is too large to send. Start a new chat."));
     }
     let url = &target.url;
+    let mut echo_dropped = req.no_reasoning_echo;
 
     // Retry connection failures and 5xx a couple of times, but only before any
     // output has been read, so nothing is ever duplicated.
@@ -314,6 +414,9 @@ pub async fn stream_chat(
         }
         if target.branded {
             post = post.header("X-Client", "blaze-ide");
+        }
+        for (k, v) in &target.headers {
+            post = post.header(*k, v.as_str());
         }
         let send = post.send();
         let r = tokio::select! {
@@ -331,9 +434,19 @@ pub async fn stream_chat(
             Ok(r) => {
                 let status = r.status().as_u16();
                 let text = r.text().await.unwrap_or_default();
+                // A provider that refuses the echoed thinking: send once more without it.
+                if status == 400 && !echo_dropped && text.contains("reasoning") {
+                    echo_dropped = true;
+                    let mut plain = req.clone();
+                    plain.no_reasoning_echo = true;
+                    body = serde_json::to_vec(&build_body(&plain))?;
+                    continue;
+                }
                 return Err(friendly_http_error(status, &text, target.branded));
             }
-            Err(e) if attempt < 2 && (e.is_connect() || e.is_timeout()) => {
+            // is_request: the request could not be sent (dropped/stale connection),
+            // so nothing reached the server and sending again is safe.
+            Err(e) if attempt < 2 && (e.is_connect() || e.is_timeout() || e.is_request()) => {
                 tokio::time::sleep(Duration::from_millis(400 * (attempt + 1))).await;
             }
             Err(e) => return Err(e.into()),
@@ -374,6 +487,9 @@ pub async fn stream_chat(
     let recovered = !calls.is_empty();
     for ev in calls {
         emit(ev);
+    }
+    if let Some(msg) = parser.error.take().filter(|_| !recovered) {
+        return Err(Error::msg(msg));
     }
     if dropped && !recovered {
         return Err(Error::msg("The response was cut off (the connection dropped during a long generation). Try again, or ask for smaller steps."));
@@ -420,6 +536,9 @@ pub async fn complete(http: &reqwest::Client, target: &Target<'_>, model: &str, 
     if target.branded {
         post = post.header("X-Client", "blaze-ide");
     }
+    for (k, v) in &target.headers {
+        post = post.header(*k, v.as_str());
+    }
     let resp = post.send().await.map_err(|e| Error::msg(format!("completion failed: {e}")))?;
     let status = resp.status();
     let text = resp.text().await.unwrap_or_default();
@@ -438,11 +557,14 @@ mod tests {
         AiRequest {
             request_id: "r1".into(),
             model: "glm-5.3".into(),
-            messages: vec![ChatMessage { role: "user".into(), content: "hi".into(), tool_call_id: None, tool_calls: None }],
+            messages: vec![ChatMessage { role: "user".into(), content: "hi".into(), tool_call_id: None, tool_calls: None, reasoning: None, images: None }],
             mode: mode.into(),
             filename: None,
             reasoning_effort: Some("off".into()),
             media_gen: None,
+            video_gen: None,
+            no_reasoning_echo: false,
+            ..Default::default()
         }
     }
 
@@ -452,12 +574,71 @@ mod tests {
         assert_eq!(b["messages"][0]["role"], "system");
         assert!(b.get("tools").is_none());
         assert!(b.get("reasoning_effort").is_none());
+        // Extra system text and tools (bots, CLI) and leaving out built-ins.
+        let mut r = req("agent");
+        r.extra_system = Some("You are Nova.".into());
+        r.extra_tools = vec![json!({"type":"function","function":{"name":"remember","parameters":{"type":"object"}}})];
+        r.exclude_tools = vec!["browser".into()];
+        let b = build_body(&r);
+        assert!(b["messages"][0]["content"].as_str().unwrap().ends_with("You are Nova."));
+        let names: Vec<&str> = b["tools"].as_array().unwrap().iter().map(|t| t["function"]["name"].as_str().unwrap()).collect();
+        assert!(names.contains(&"remember") && !names.contains(&"browser") && names.contains(&"read_file"));
+        let mut a = req("ask");
+        a.extra_tools = r.extra_tools.clone();
+        assert_eq!(build_body(&a)["tools"].as_array().unwrap().len(), 1);
         let mut r = req("agent");
         r.reasoning_effort = Some("max".into());
         let b = build_body(&r);
         assert!(b["tools"].as_array().unwrap().len() >= 7);
         assert_eq!(b["reasoning_effort"], "high");
         assert_eq!(b["stream_options"]["include_usage"], true);
+    }
+
+    #[test]
+    fn echoes_thinking_only_on_current_tool_turns() {
+        let call = ToolCall { id: "c1".into(), name: "read_file".into(), arguments: "{}".into(), extra: None };
+        let mut r = req("agent");
+        r.messages = vec![
+            ChatMessage { role: "user".into(), content: "a".into(), tool_call_id: None, tool_calls: None, reasoning: None, images: None },
+            ChatMessage { role: "assistant".into(), content: "".into(), tool_call_id: None, tool_calls: Some(vec![call.clone()]), reasoning: Some("old".into()), images: None },
+            ChatMessage { role: "tool".into(), content: "x".into(), tool_call_id: Some("c1".into()), tool_calls: None, reasoning: None, images: None },
+            ChatMessage { role: "user".into(), content: "b".into(), tool_call_id: None, tool_calls: None, reasoning: None, images: None },
+            ChatMessage { role: "assistant".into(), content: "".into(), tool_call_id: None, tool_calls: Some(vec![call]), reasoning: Some("new".into()), images: None },
+        ];
+        let b = build_body(&r);
+        let msgs = b["messages"].as_array().unwrap();
+        assert!(msgs[2].get("reasoning_content").is_none());
+        assert_eq!(msgs[5]["reasoning_content"], "new");
+        r.no_reasoning_echo = true;
+        assert!(build_body(&r)["messages"][5].get("reasoning_content").is_none());
+    }
+
+    #[test]
+    fn images_become_content_parts_newest_only() {
+        let img = |n: &str| ChatMessage { role: "user".into(), content: n.into(), tool_call_id: None, tool_calls: None, reasoning: None, images: Some(vec!["data:image/png;base64,AAAA".into()]) };
+        let mut r = req("agent");
+        r.messages = vec![img("a"), img("b"), img("c"), img("d")];
+        let b = build_body(&r);
+        let m = b["messages"].as_array().unwrap();
+        assert!(m[1]["content"].as_str().unwrap().contains("earlier image(s) omitted"));
+        assert_eq!(m[4]["content"][1]["image_url"]["url"], "data:image/png;base64,AAAA");
+        assert_eq!(m[4]["content"][0]["text"], "d");
+        let names: Vec<String> = b["tools"].as_array().unwrap().iter().map(|t| t["function"]["name"].as_str().unwrap().to_string()).collect();
+        assert!(names.contains(&"browser".to_string()) && !names.contains(&"generate_video".to_string()));
+        r.video_gen = Some(true);
+        assert!(build_body(&r)["tools"].as_array().unwrap().iter().any(|t| t["function"]["name"] == "generate_video"));
+    }
+
+    #[test]
+    fn stream_errors_and_reasoning() {
+        let mut p = SseParser::default();
+        let mut out = Vec::new();
+        p.feed(b"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"hmm\"}}]}\n\ndata: {\"error\":{\"message\":\"upstream busy\"}}\n\n", &mut out);
+        assert_eq!(out, vec![StreamEvent::Reasoning { text: "hmm".into() }]);
+        assert_eq!(p.error.as_deref(), Some("upstream busy"));
+        assert_eq!(routing_headers("direct"), vec![("X-Blaze-Routing", "trusted".to_string())]);
+        assert_eq!(routing_headers("cheapest").len(), 2);
+        assert!(routing_headers("").is_empty());
     }
 
     #[test]

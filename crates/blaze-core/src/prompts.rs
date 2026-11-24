@@ -31,7 +31,10 @@ const TOOL_GUIDANCE: &str = "Working with the project:
 - If you introduce errors, fix them when the fix is clear. Do not loop more than 3 times on the same file.
 - If an apply_diff fails to match, read the file again, then retry.
 - Never hardcode secrets or API keys.
-- For images a site needs (hero shots, icons, logos, illustrations, backgrounds), use generate_image to create real assets in the project (e.g. assets/hero.png) and reference them. Write a vivid, specific prompt and pick a fitting aspect_ratio.";
+- For images a site needs (hero shots, icons, logos, illustrations, backgrounds), use generate_image to create real assets in the project (e.g. assets/hero.png) and reference them. Write a vivid, specific prompt and pick a fitting aspect_ratio.
+- If generate_video is available, it animates a project image into a short .mp4 (make the still with generate_image first). Clips cost money: one or two per page at most, only when motion really adds something.
+- You have your own browser (the browser tool). After building or changing anything visual, open the page, take a screenshot and LOOK at it, check the console for errors, and fix what is wrong before you finish: broken layout, overlapping or cut-off text, poor contrast, missing images, console errors. Check a phone width (width 390) for sites. Do not claim something looks right without having looked at it.
+- The user may attach images (screenshots, mockups, designs) to a message. Look at them carefully and use them as the reference.";
 
 const ASK: &str = "Mode: Ask. Answer the USER's question about their code or the concept at hand.
 You are read-only here: explain, suggest and show code in fenced blocks, but do not claim to have edited files.

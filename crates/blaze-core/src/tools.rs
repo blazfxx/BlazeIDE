@@ -2,8 +2,9 @@
 //! execution of the ones that run in the core. Every path is resolved with
 //! `paths::resolve_in`, so the model can never reach outside the project.
 //!
-//! apply_diff, ask_question, write_plan and generate_image are handled by the
-//! UI (they need the diff view, a prompt, or the editor), not here.
+//! apply_diff, ask_question, write_plan, generate_image, generate_video and
+//! browser are handled by the UI (they need the diff view, a prompt, the
+//! editor or the preview browser), not here.
 
 use std::path::Path;
 use std::time::Duration;
@@ -86,6 +87,24 @@ fn generate_image_tool() -> Value {
             "aspect_ratio": { "type": "string", "description": "Optional aspect ratio: \"1:1\", \"16:9\", \"9:16\", \"4:3\", or \"3:4\". Defaults to 1:1." }
         }), &["prompt", "path"])
 }
+fn generate_video_tool() -> Value {
+    tool("generate_video", "Generate a short video clip (about 3-10 s) with an AI video model and save it into the project as .mp4. Two ways: animate a still (pass `image`: make it with generate_image first, or use one already in the project) for full control of the look, or text-to-video (leave `image` out) to film the prompt directly. Costs about $0.20-1.00 per clip, so make each one count. Use it for hero/background videos and product shots.",
+        json!({
+            "image": { "type": "string", "description": "Optional: relative path of a still image to animate (e.g. \"assets/hero.png\"). Leave out for text-to-video." },
+            "prompt": { "type": "string", "description": "The motion: what moves, how the camera moves, mood (e.g. \"slow push-in, steam rising, soft morning light\")" },
+            "path": { "type": "string", "description": "Relative path to save the clip, ending in .mp4 (e.g. \"assets/hero.mp4\")" }
+        }), &["prompt", "path"])
+}
+fn browser_tool() -> Value {
+    tool("browser", "Your own browser: open a page of the project in the IDE's preview, LOOK at it with a screenshot (attached for you to see), read the page's console errors, click or scroll. Use it after building or changing UI to check how it really looks and works, then fix what is wrong (layout, spacing, contrast, broken images, errors). Works on project HTML files (e.g. \"index.html\") and on local servers you start (e.g. \"http://localhost:8000\", started in the background with run_command first).",
+        json!({
+            "action": { "type": "string", "enum": ["open", "screenshot", "console", "click", "scroll"], "description": "open: load a page; screenshot: see the current viewport (or the whole page with full_page); console: recent console messages and errors; click: click the element matching `target` (CSS selector); scroll: scroll to `y` pixels" },
+            "target": { "type": "string", "description": "open: project path (e.g. \"index.html\") or http://localhost:PORT URL; click: CSS selector" },
+            "y": { "type": "integer", "description": "scroll: vertical position in pixels" },
+            "full_page": { "type": "boolean", "description": "screenshot: capture the whole page height (up to 4000 px) instead of the viewport" },
+            "width": { "type": "integer", "description": "open/screenshot: viewport width to emulate, e.g. 390 for a phone or 1280 for desktop (default: the preview's own width)" }
+        }), &["action"])
+}
 fn write_plan_tool() -> Value {
     tool("write_plan", "Save the finished implementation plan. Call this ONCE, at the end, after gathering context and asking any clarifying questions. The full plan is saved to the project and opened in the editor; the short summary is shown in chat.",
         json!({
@@ -97,6 +116,11 @@ fn write_plan_tool() -> Value {
 
 /// Tools offered for a mode. Ask mode gets none (returns None).
 pub fn tools_for(mode: &str, image_gen: bool) -> Option<Vec<Value>> {
+    tools_for_opts(mode, image_gen, false)
+}
+
+/// Like `tools_for`, with video generation as an extra opt-in.
+pub fn tools_for_opts(mode: &str, image_gen: bool, video_gen: bool) -> Option<Vec<Value>> {
     match mode {
         "plan" => Some(vec![read_file_tool(), list_directory_tool(), search_files_tool(), ask_question_tool(), write_plan_tool()]),
         "agent" => {
@@ -104,6 +128,10 @@ pub fn tools_for(mode: &str, image_gen: bool) -> Option<Vec<Value>> {
             if image_gen {
                 t.push(generate_image_tool());
             }
+            if video_gen {
+                t.push(generate_video_tool());
+            }
+            t.push(browser_tool());
             t.push(ask_question_tool());
             t.push(run_command_tool());
             Some(t)
@@ -133,7 +161,7 @@ pub async fn run_tool(name: &str, args_json: &str, root: &Path) -> String {
             Ok(cmd) => Ok(run_command(root, cmd).await),
             Err(e) => Err(e),
         },
-        "apply_diff" | "ask_question" | "write_plan" | "generate_image" => {
+        "apply_diff" | "ask_question" | "write_plan" | "generate_image" | "generate_video" | "browser" => {
             Err(Error::msg(format!("{name} is handled by the IDE, not run_tool.")))
         }
         other => Err(Error::msg(format!("unknown tool \"{other}\""))),

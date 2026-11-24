@@ -18,6 +18,9 @@ pub struct Sandbox {
     /// Single files the user picked in a native dialog (backgrounds, audio).
     /// They may be served to the webview but are not writable.
     picked: RwLock<HashSet<PathBuf>>,
+    /// The app's own media folder (copies of picked backgrounds/audio): always
+    /// readable, never writable through the UI.
+    media_dirs: RwLock<Vec<PathBuf>>,
 }
 
 impl Sandbox {
@@ -42,6 +45,18 @@ impl Sandbox {
     pub fn grant_picked_file(&self, file: &Path) -> Result<PathBuf> {
         let canon = dunce::canonicalize(file)?;
         self.picked.write().expect("sandbox lock").insert(canon.clone());
+        Ok(canon)
+    }
+
+    /// Make a folder readable (not writable) for the webview, creating it if
+    /// needed. Used for the app's media folder.
+    pub fn grant_media_dir(&self, dir: &Path) -> Result<PathBuf> {
+        std::fs::create_dir_all(dir)?;
+        let canon = dunce::canonicalize(dir)?;
+        let mut dirs = self.media_dirs.write().expect("sandbox lock");
+        if !dirs.contains(&canon) {
+            dirs.push(canon.clone());
+        }
         Ok(canon)
     }
 
@@ -79,6 +94,7 @@ impl Sandbox {
         let resolved = resolve_absolute(raw)?;
         if self.roots().iter().any(|r| resolved.starts_with(r))
             || self.picked.read().expect("sandbox lock").contains(&resolved)
+            || self.media_dirs.read().expect("sandbox lock").iter().any(|d| resolved.starts_with(d))
         {
             Ok(resolved)
         } else {
@@ -219,5 +235,25 @@ mod tests {
         sb.grant_picked_file(&pic).unwrap();
         assert!(sb.require_readable(pic.to_str().unwrap()).is_ok());
         assert!(sb.require(pic.to_str().unwrap()).is_err(), "picked files are not writable paths");
+    }
+
+    #[test]
+    fn media_dir_is_readable_after_a_restart() {
+        let app = tempfile::tempdir().unwrap();
+        let dir = app.path().join("media");
+        // First run: grant, store a file.
+        let sb = Sandbox::new();
+        let d = sb.grant_media_dir(&dir).unwrap();
+        let f = d.join("abc.mp4");
+        std::fs::write(&f, "v").unwrap();
+        // A fresh process (new Sandbox) grants the folder again at startup.
+        let sb2 = Sandbox::new();
+        assert!(sb2.require_readable(f.to_str().unwrap()).is_err());
+        sb2.grant_media_dir(&dir).unwrap();
+        assert!(sb2.require_readable(f.to_str().unwrap()).is_ok());
+        assert!(sb2.require(f.to_str().unwrap()).is_err(), "media files are not writable paths");
+        let outside = app.path().join("other.mp4");
+        std::fs::write(&outside, "x").unwrap();
+        assert!(sb2.require_readable(outside.to_str().unwrap()).is_err());
     }
 }

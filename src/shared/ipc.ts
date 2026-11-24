@@ -5,6 +5,7 @@
 // doesn't exist.
 
 import type {
+  SupplierEntry,
   ExtContributions,
   InstalledExt,
   MarketItem,
@@ -39,6 +40,10 @@ export interface VoidAPI {
   installUpdate(): Promise<void>;
   /** Download progress of installUpdate (bytes; total may be unknown). */
   onUpdateProgress(cb: (done: number, total: number | null) => void): () => void;
+  /** Background update: check + download (+ install in place on macOS). */
+  autoUpdate(): Promise<{ status: 'off' | 'current' | 'installed' | 'ready'; version?: string }>;
+  /** Restart into the new version (installs a waiting Windows update first). */
+  applyUpdate(): Promise<void>;
 
   // --- fs ---
   fsOpenFolder(): Promise<string | null>; // native dialog; returns root path
@@ -82,12 +87,17 @@ export interface VoidAPI {
   /** Generate an image with a BlazeAPI image model and save it into the
    *  project. Returns a human/tool-result string (path written, or an error). */
   aiGenerateMedia(req: {
-    kind: 'image';
+    kind: 'image' | 'video';
     prompt: string;
     path: string;
     aspectRatio?: string;
+    /** video: the project image to animate */
+    image?: string;
     projectRoot: string;
   }): Promise<string>;
+
+  /** BlazeAPI suppliers that serve an image model (for Settings). */
+  aiImageSuppliers(model: string): Promise<SupplierEntry[]>;
 
   /** Ghost-text completion for the cursor position ('' when none). */
   aiComplete(req: { prefix: string; suffix: string; filename?: string }): Promise<string>;
@@ -121,6 +131,37 @@ export interface VoidAPI {
   openExternal(url: string): Promise<void>;
   /** Native picker for a background image/video or ambient audio file. */
   pickMedia(kind: 'image' | 'video' | 'audio'): Promise<string | null>;
+  /** The bundled `blaze` CLI: is it in this build, and on the PATH? */
+  cliStatus(): Promise<{ available: boolean; installed: boolean; path: string }>;
+  /** Put `blaze` on the PATH (macOS may ask for an administrator password). */
+  cliInstall(): Promise<string>;
+  // Continue on mobile
+  mobileStatus(): Promise<MobileStatus>;
+  mobileSetPassword(password: string): Promise<MobileStatus>;
+  mobileConfigure(cfg: { enabled: boolean; lan: boolean; quickTunnel: boolean; relay: boolean; domain: string; domainTunnel: boolean; port?: number }): Promise<MobileStatus>;
+  mobileSetTunnelToken(token: string): Promise<MobileStatus>;
+  mobilePairQr(url: string): Promise<{ link: string; svg: string }>;
+  mobileRevoke(id: string): Promise<MobileStatus>;
+  // BlBots
+  botsList(): Promise<BotsOverview>;
+  botsSave(bot: BotProfile): Promise<BotProfile>;
+  botsDelete(id: string): Promise<void>;
+  botsDuplicate(id: string): Promise<BotProfile>;
+  botsThreads(bot: string): Promise<{ threads: Array<{ id: string; title: string; updatedAt: number; messageCount: number }>; memory: string }>;
+  botsThread(bot: string, id: string): Promise<{ id: string; title: string; messages: BotMsg[]; pending: BotPending[] }>;
+  botsSetMemory(bot: string, text: string): Promise<void>;
+  botsSend(bot: string, thread: string | null, text: string): Promise<{ runId: string; chatId: string }>;
+  botsCancel(runId: string): Promise<void>;
+  botsAnswer(id: string, allow: boolean | null, answers: string[] | null): Promise<void>;
+  botsComputer(bot: string): Promise<string>;
+  roomsSave(room: { id: string; name: string; members: string[]; lead: string; instructions: string; folder: string }): Promise<{ id: string }>;
+  roomsDelete(id: string): Promise<void>;
+  roomsGet(id: string): Promise<{ id: string; name: string; messages: BotMsg[]; pending: BotPending[] }>;
+  roomsSend(room: string, text: string): Promise<{ runId: string; chatId: string }>;
+  onBotEvent(cb: (e: { runId: string; chatId: string; bot: string; ev: any }) => void): () => void;
+  onBotPending(cb: (p: BotPending) => void): () => void;
+  onBotRunEnd(cb: (e: { runId: string; chatId: string; error: string | null; stopped: boolean }) => void): () => void;
+  onBotSched(cb: (e: { kind: 'started' | 'finished'; bot: string; thread: string | null; title: string; error?: string | null }) => void): () => void;
   /** 'mac' | 'windows' | 'linux' — for platform-specific labels and chords. */
   platform(): 'mac' | 'windows' | 'linux';
 
@@ -144,3 +185,38 @@ export type MenuAction =
   | 'command-palette'
   | 'settings'
   | 'account';
+
+export interface MobileStatus {
+  enabled: boolean;
+  hasPassword: boolean;
+  running: boolean;
+  port: number;
+  lan: boolean;
+  quickTunnel: boolean;
+  relay: boolean;
+  domain: string | null;
+  domainTunnel: boolean;
+  hasTunnelToken: boolean;
+  urls: Array<{ label: string; url: string }>;
+  relayState: string;
+  activeRuns: number;
+  devices: Array<{ id: string; name: string; lastSeen: number; created: number }>;
+  error: string | null;
+}
+
+export type BotSchedule = { kind: 'daily' | 'weekdays'; time: string } | { kind: 'weekly'; days: number[]; time: string } | { kind: 'every'; hours: number } | { kind: 'cron'; expr: string };
+export interface BotRoutine { id: string; title: string; prompt: string; schedule: BotSchedule; enabled: boolean; catchUp: boolean; lastRun: number; thread: string | null }
+export interface BotProfile {
+  id: string; name: string; avatar: string; color: string; title: string; soul: string;
+  engine: { kind: 'blaze' } | { kind: 'claude' | 'codex' | 'grok'; bin: string | null };
+  model: string; approval: 'ask' | 'edits' | 'full'; folder: string; mode: string;
+  routines: BotRoutine[]; checkBacks: Array<{ id: string; at: number; thread: string; note: string }>;
+  pinned: boolean; hidden: boolean; created: number; computer: boolean;
+}
+export interface BotsOverview {
+  bots: BotProfile[];
+  rooms: Array<{ id: string; name: string; members: string[]; lead: string | null; instructions: string; folder: string; updated: number }>;
+  engines: Array<{ name: string; path: string | null }>;
+}
+export interface BotMsg { role: string; text: string; tools?: string[]; author?: string }
+export interface BotPending { id: string; kind: string; runId: string; chatId: string; summary?: string; questions?: Array<{ question: string; options: string[] }> }

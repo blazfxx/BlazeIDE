@@ -10,6 +10,10 @@ import { AMBIENT_PRESETS, setAmbientVolume } from '../ambientAudio';
 import { buildKeybindingsSection } from './keybindings';
 import { buildExtensionsSection } from './extensions';
 import { buildProvidersSection } from './providers';
+import { buildCliSection } from './cli';
+import { buildMobileSection } from './mobile';
+import { routingChoices, setRouting } from '../ai-panel/routing';
+import type { AIRouting } from '../../shared/types';
 import {
   apply,
   filterSections,
@@ -42,6 +46,53 @@ function buildWorkbenchSection(): HTMLElement[] {
   ];
 }
 
+function buildUpdatesSection(): HTMLElement[] {
+  const s = state.settings;
+  const status = el('span', 'update-status', 'Not checked yet');
+  const checkBtn = el('button', '', 'Check for updates') as HTMLButtonElement;
+  const updateBtn = el('button', 'primary', 'Update now') as HTMLButtonElement;
+  updateBtn.disabled = true;
+  let latest = '';
+  const check = async (): Promise<void> => {
+    checkBtn.disabled = true;
+    status.textContent = 'Checking…';
+    try {
+      const v = await window.void.checkVersion();
+      latest = v.latest;
+      const newer = !!v.current && v.latest !== v.current && v.latest.localeCompare(v.current, undefined, { numeric: true }) > 0;
+      status.textContent = newer ? `Blaze IDE ${v.latest} is available (you have ${v.current}).` : `You're up to date (${v.current ?? 'unknown version'}).`;
+      updateBtn.disabled = !newer;
+    } catch (e) {
+      status.textContent = `Could not check: ${String(e)}`;
+    } finally {
+      checkBtn.disabled = false;
+    }
+  };
+  checkBtn.addEventListener('click', () => void check());
+  updateBtn.addEventListener('click', () => {
+    updateBtn.disabled = true;
+    checkBtn.disabled = true;
+    status.textContent = `Downloading ${latest}…`;
+    const off = window.void.onUpdateProgress((done, total) => {
+      status.textContent = total ? `Downloading ${latest}… ${Math.min(100, Math.round((done / total) * 100))}%` : `Downloading ${latest}…`;
+    });
+    // Downloads, checks the signature, installs and restarts the app.
+    window.void.installUpdate().then(() => off(), (e) => {
+      off();
+      status.textContent = `Update failed: ${String(e)}`;
+      updateBtn.disabled = false;
+      checkBtn.disabled = false;
+    });
+  });
+  const actions = el('div', 'update-actions');
+  actions.append(checkBtn, updateBtn, status);
+  void check();
+  return [
+    settingRow('Automatic updates', 'Download new versions in the background (signature-checked) and install them when you quit the app (or right away with Restart now). Off = nothing is downloaded until you press Update now.', toggle(s.autoUpdate !== false, (v) => void apply({ autoUpdate: v }))),
+    settingBlock('Check for updates', 'Look for a newer Blaze IDE now, and install it.', actions),
+  ];
+}
+
 function buildTerminalSection(): HTMLElement[] {
   const s = state.settings;
   return [
@@ -58,6 +109,30 @@ function buildAISection(): HTMLElement[] {
     label: lvl === 'off' ? 'Off' : lvl.charAt(0).toUpperCase() + lvl.slice(1),
   }));
 
+  const imageModels = state.models
+    .filter((m) => m.kind === 'image' && !m.id.includes('edit'))
+    .map((m) => ({ value: m.id, label: `${m.displayName}${m.priceIn ? ` · $${+m.priceIn.toPrecision(2)} each` : ''}` }));
+  const supplierSelect = el('select', 'setting-select') as HTMLSelectElement;
+  supplierSelect.addEventListener('change', () => void apply({ imageSupplier: supplierSelect.value }));
+  function fillSuppliers(model: string): void {
+    supplierSelect.innerHTML = '';
+    const auto = el('option', '', 'Automatic') as HTMLOptionElement;
+    auto.value = '';
+    supplierSelect.appendChild(auto);
+    supplierSelect.value = '';
+    supplierSelect.disabled = !model;
+    if (!model) return;
+    void window.void.aiImageSuppliers(model).then((list) => {
+      for (const sup of list) {
+        const o = el('option', '', escapeHtml(`${sup.id}${sup.status && sup.status !== 'healthy' ? ` (${sup.status})` : ''}`)) as HTMLOptionElement;
+        o.value = sup.id;
+        supplierSelect.appendChild(o);
+      }
+      supplierSelect.value = list.some((x) => x.id === state.settings.imageSupplier) ? state.settings.imageSupplier : '';
+    }, () => { /* leave Automatic only */ });
+  }
+  fillSuppliers(s.imageModel);
+
   const browse = el('button', '', 'Browse all BlazeAPI models');
   browse.addEventListener('click', () => void window.void.openExternal(MODELS_URL));
 
@@ -67,7 +142,12 @@ function buildAISection(): HTMLElement[] {
     settingRow('Auto-approve agent actions', 'Agent will modify files and run commands without asking. Use with care.', toggle(s.aiAutoApprove, (v) => void apply({ aiAutoApprove: v }))),
     settingRow('Autocomplete', 'Ghost-text suggestions while you type; press Tab to accept. Uses a very cheap fast model by default (a fraction of a cent per hundred suggestions) and falls back to a free one.', toggle(s.aiAutocomplete, (v) => void apply({ aiAutocomplete: v }))),
     settingRow('Autocomplete model', 'Which model writes the suggestions. Automatic picks a cheap fast one.', selectInput([{ value: '', label: 'Automatic (cheap, fast)' }, ...models], s.aiAutocompleteModel, (v) => void apply({ aiAutocompleteModel: v }))),
-    settingRow('Image generation', 'Off by default. When on, the AI agent can generate images as project assets (hero images, icons, logos), billed to your BlazeAPI balance per image. Pick the image model in the model picker.', toggle(s.aiMediaGen, (v) => void apply({ aiMediaGen: v }))),
+    settingRow('Routing', 'Which BlazeAPI routing chat requests use. Normal: the most models and the lowest prices. Direct: model makers and trusted resellers only. Account: whatever your BlazeAPI account is set to.', selectInput(routingChoices().map((c) => ({ value: c.value, label: c.admin ? `${c.label} (owner only)` : c.label })), s.aiRouting ?? '', (v) => void setRouting(v as AIRouting).then(() => apply({})))),
+    settingRow('Image generation', 'Off by default. When on, the AI agent can generate images as project assets (hero images, icons, logos), billed to your BlazeAPI balance per image.', toggle(s.aiMediaGen, (v) => void apply({ aiMediaGen: v }))),
+    settingRow('Image model', 'Model the agent uses for images. Automatic tries the models whose suppliers are delivering first, and if a model fails the next one is tried, so one model being out of stock never stops the agent.', selectInput([{ value: '', label: 'Automatic' }, ...imageModels], s.imageModel, (v) => void apply({ imageModel: v, imageSupplier: '' }).then(() => fillSuppliers(v)))),
+    settingRow('Video generation', 'Off by default. When on, the agent can animate an image into a short video clip (hero or background videos). Each clip costs about $0.20-0.50 of your BlazeAPI balance.', toggle(s.aiVideoGen, (v) => void apply({ aiVideoGen: v }))),
+    settingRow('Video model', 'Model for video clips. Automatic starts with fast, cheap ones and tries the next if one fails.', selectInput([{ value: '', label: 'Automatic' }, ...state.models.filter((m) => m.kind === 'video').map((m) => ({ value: m.id, label: `${m.displayName}${m.priceIn ? ` · $${+m.priceIn.toPrecision(2)} each` : ''}` }))], s.videoModel, (v) => void apply({ videoModel: v }))),
+    settingRow('Image supplier', 'Which BlazeAPI supplier serves the chosen image model. Automatic lets BlazeAPI pick. Only applies when a specific image model is chosen.', supplierSelect),
     settingBlock('Models and prices', 'Prices are per 1M tokens and come straight from BlazeAPI.', browse),
   ];
 }
@@ -123,35 +203,42 @@ function buildAppearanceSection(): HTMLElement[] {
     )
   );
 
-  // Custom background: pick an image file (stored inline as a data URL).
+  // Custom background: picked in the native dialog and copied into the app's
+  // own media folder (it used to be inlined as a data URL, which the settings
+  // size cap rejected for any real photo).
   const bgControl = el('div', 'bg-control');
   const pickBtn = el('button', '', s.backgroundImage ? 'Change image' : 'Choose image…');
   const clearBtn = el('button', '', 'Remove');
   clearBtn.style.display = s.backgroundImage ? '' : 'none';
-  const fileInput = el('input') as HTMLInputElement;
-  fileInput.type = 'file';
-  fileInput.accept = 'image/*';
-  fileInput.style.display = 'none';
-  pickBtn.addEventListener('click', () => fileInput.click());
-  fileInput.addEventListener('change', () => {
-    const file = fileInput.files?.[0];
-    if (!file) return;
-    if (file.size > 8 * 1024 * 1024) { alert('Please choose an image under 8 MB.'); return; }
-    const reader = new FileReader();
-    reader.onload = () => {
-      void apply({ backgroundImage: String(reader.result), backgroundVideo: null });
-      clearBtn.style.display = '';
-      pickBtn.textContent = 'Change image';
-    };
-    reader.readAsDataURL(file);
+  const bgError = el('div', 'setting-error');
+  bgError.style.display = 'none';
+  const showBgError = (e: unknown): void => {
+    bgError.textContent = e instanceof Error ? e.message : String(e);
+    bgError.style.display = '';
+  };
+  pickBtn.addEventListener('click', () => {
+    bgError.style.display = 'none';
+    pickBtn.disabled = true;
+    void window.void
+      .pickMedia('image')
+      .then(async (picked) => {
+        if (!picked) return;
+        await apply({ backgroundImage: picked, backgroundVideo: null });
+        clearBtn.style.display = '';
+        pickBtn.textContent = 'Change image';
+        adjustBtn.disabled = false;
+      })
+      .catch(showBgError)
+      .finally(() => { pickBtn.disabled = false; });
   });
   clearBtn.addEventListener('click', () => {
     void apply({ backgroundImage: null });
     clearBtn.style.display = 'none';
     pickBtn.textContent = 'Choose image…';
+    adjustBtn.disabled = !state.settings.backgroundVideo;
   });
-  bgControl.append(pickBtn, clearBtn, fileInput);
-  rows.push(settingRow('Custom background', 'Show an image behind the workbench. Stored locally on this machine.', bgControl));
+  bgControl.append(pickBtn, clearBtn, bgError);
+  rows.push(settingRow('Custom background', 'Show an image behind the workbench. A copy is kept in the app\'s own folder on this machine (up to 50 MB).', bgControl));
 
   // Video background: picked via the native dialog (path reference, not inlined)
   // and played as a muted loop. Mutually exclusive with a background image.
@@ -159,24 +246,39 @@ function buildAppearanceSection(): HTMLElement[] {
   const vidPickBtn = el('button', '', s.backgroundVideo ? 'Change video' : 'Choose video…');
   const vidClearBtn = el('button', '', 'Remove');
   vidClearBtn.style.display = s.backgroundVideo ? '' : 'none';
+  const vidError = el('div', 'setting-error');
+  vidError.style.display = 'none';
   vidPickBtn.addEventListener('click', () => {
-    void window.void.pickMedia('video').then((picked) => {
-      if (!picked) return;
-      // Picking a video replaces any image background.
-      void apply({ backgroundVideo: picked, backgroundImage: null });
-      vidClearBtn.style.display = '';
-      vidPickBtn.textContent = 'Change video';
-      adjustBtn.disabled = false;
-    });
+    vidError.style.display = 'none';
+    vidPickBtn.disabled = true;
+    const label = vidPickBtn.textContent;
+    vidPickBtn.textContent = 'Copying…';
+    void window.void
+      .pickMedia('video')
+      .then(async (picked) => {
+        if (!picked) return;
+        // Picking a video replaces any image background.
+        await apply({ backgroundVideo: picked, backgroundImage: null });
+        vidClearBtn.style.display = '';
+        adjustBtn.disabled = false;
+      })
+      .catch((e: unknown) => {
+        vidError.textContent = e instanceof Error ? e.message : String(e);
+        vidError.style.display = '';
+      })
+      .finally(() => {
+        vidPickBtn.disabled = false;
+        vidPickBtn.textContent = state.settings.backgroundVideo ? 'Change video' : label || 'Choose video…';
+      });
   });
   vidClearBtn.addEventListener('click', () => {
     void apply({ backgroundVideo: null });
     vidClearBtn.style.display = 'none';
     vidPickBtn.textContent = 'Choose video…';
-    adjustBtn.disabled = !s.backgroundImage;
+    adjustBtn.disabled = !state.settings.backgroundImage;
   });
-  vidControl.append(vidPickBtn, vidClearBtn);
-  rows.push(settingRow('Video background', 'Play a looping, muted video behind the workbench. Plays from the original file on this machine.', vidControl));
+  vidControl.append(vidPickBtn, vidClearBtn, vidError);
+  rows.push(settingRow('Video background', 'Play a looping, muted video behind the workbench. A copy is kept in the app\'s own folder (up to 1 GB), so it stays after a restart.', vidControl));
 
   // Fit mode: Fill crops to cover the window (may upscale/blur a small image);
   // Fit shows the whole image without forcing it past its natural size.
@@ -224,7 +326,7 @@ function buildAppearanceSection(): HTMLElement[] {
   rows.push(
     settingRow(
       'Auto-contrast text',
-      'Adjust text colour to stay readable against your background (light text on dark images, dark on light).',
+      'Keep text readable over your background: light text with a soft shadow, and denser panels.',
       toggle(s.backgroundAutoContrast, (v) => void apply({ backgroundAutoContrast: v }))
     )
   );
@@ -311,6 +413,9 @@ const SECTIONS: Array<{ id: string; label: string; build: () => HTMLElement[] }>
   { id: 'sec-editor', label: 'Editor', build: buildEditorSection },
   { id: 'sec-workbench', label: 'Workbench', build: buildWorkbenchSection },
   { id: 'sec-terminal', label: 'Terminal', build: buildTerminalSection },
+  { id: 'sec-updates', label: 'Updates', build: buildUpdatesSection },
+  { id: 'sec-cli', label: 'Command line', build: buildCliSection },
+  { id: 'sec-mobile', label: 'Continue on mobile', build: buildMobileSection },
   { id: 'sec-ai', label: 'AI', build: buildAISection },
   { id: 'sec-extensions', label: 'Extensions', build: buildExtensionsSection },
   { id: 'sec-providers', label: 'Custom providers', build: buildProvidersSection },

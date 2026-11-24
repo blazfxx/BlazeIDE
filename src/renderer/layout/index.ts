@@ -70,7 +70,12 @@ export function initLayout(app: HTMLElement): LayoutEls {
   settingsBtn.title = window.void.platform() === 'mac' ? 'Settings (⌘,)' : 'Settings (Ctrl+,)';
   settingsBtn.addEventListener('click', () => bus.emit('open-settings', undefined));
 
-  titlebar.append(titleText, settingsBtn);
+  // BlBots, left of the gear.
+  const botsBtn = el('button', 'titlebar-bots', 'BlBots');
+  botsBtn.title = 'BlBots: your AI bots and rooms';
+  botsBtn.addEventListener('click', () => bus.emit('open-blbots', undefined));
+
+  titlebar.append(titleText, botsBtn, settingsBtn);
 
   const main = el('div', '');
   main.id = 'main';

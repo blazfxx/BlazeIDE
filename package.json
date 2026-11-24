@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit",
     "dev": "tauri dev",
     "dist": "tauri build",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "build:shot": "esbuild scripts/preview-shot-entry.js --bundle --minify --format=iife --legal-comments=inline --banner:js='/*! html-to-image 1.11.13 (MIT, github.com/bubkoo/html-to-image) */' --outfile=src-tauri/src/preview_shot.js"
   },
   "dependencies": {
     "@tauri-apps/api": "2.12.1"
@@ -20,6 +21,7 @@
     "@xterm/addon-fit": "0.10.0",
     "@xterm/xterm": "5.5.0",
     "esbuild": "0.25.12",
+    "html-to-image": "^1.11.13",
     "monaco-editor": "0.52.2",
     "typescript": "5.9.3"
   }

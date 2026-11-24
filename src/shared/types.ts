@@ -14,6 +14,18 @@ export const REASONING_LEVELS: ReasoningEffort[] = ['off', 'low', 'medium', 'hig
 export interface SessionPublic {
   userEmail: string;
   username: string;
+  /** Owner account: sees the "Cheapest" routing choice. */
+  admin?: boolean;
+}
+
+/** BlazeAPI routing for chat: '' = the account's own setting. */
+export type AIRouting = '' | 'normal' | 'direct' | 'cheapest';
+
+/** A BlazeAPI supplier (codename) that serves a model. */
+export interface SupplierEntry {
+  id: string;
+  status: string;
+  price: number;
 }
 
 export type ModelKind = 'chat' | 'image' | 'video';
@@ -57,6 +69,11 @@ export interface ChatMessage {
   content: string;
   toolCallId?: string;
   toolCalls?: ToolCall[];
+  /** The model's thinking for a tool-call turn; sent back on the next round
+   *  (thinking models refuse the request without it). */
+  reasoning?: string;
+  /** Images on a user message (data: URLs): pasted pictures, browser screenshots. */
+  images?: string[];
 }
 
 export interface ToolCall {
@@ -95,6 +112,8 @@ export type AgentToolName =
   | 'run_command'
   | 'search_files'
   | 'generate_image'
+  | 'generate_video'
+  | 'browser'
   | 'write_plan'
   | 'ask_question';
 
@@ -113,6 +132,7 @@ export interface AIRequest {
 /** Streamed chunks pushed main -> renderer over `ai:chunk`. */
 export type AIStreamEvent =
   | { requestId: string; type: 'text'; text: string }
+  | { requestId: string; type: 'reasoning'; text: string }
   | { requestId: string; type: 'tool_call'; toolCall: ToolCall }
   | { requestId: string; type: 'tool_delta'; index: number; id?: string; name?: string; argsDelta: string }
   | { requestId: string; type: 'usage'; inputTokens: number; outputTokens: number }
@@ -135,6 +155,15 @@ export interface StoredChat {
   mode: AIMode;
   model: string;
   messages: ChatMessage[];
+  /** Per user message: the files the agent changed after it, with their earlier
+   *  content (null = the file did not exist), so the chat can be reverted. */
+  checkpoints?: Checkpoint[];
+}
+
+export interface Checkpoint {
+  /** Index in `messages` of the user message this turn started with. */
+  userIndex: number;
+  files: Array<{ rel: string; before: string | null }>;
 }
 
 /** Lightweight chat row for the history list (no message bodies). */
@@ -181,10 +210,20 @@ export interface AppSettings {
   aiMediaGen: boolean;
   /** Model used when the AI generates an image; '' = automatic. */
   imageModel: string;
+  /** BlazeAPI supplier codename for the chosen image model; '' = automatic. */
+  imageSupplier: string;
+  /** Allow the agent to make video clips (generate_video). Costs per clip; off by default. */
+  aiVideoGen: boolean;
+  /** Video model for generate_video; '' = automatic. */
+  videoModel: string;
+  /** Chat routing: '' = account setting, 'normal', 'direct', 'cheapest' (owner). */
+  aiRouting: AIRouting;
   /** Inline ghost-text completions while typing. */
   aiAutocomplete: boolean;
   /** Model for autocomplete; '' = a fast free model when available. */
   aiAutocompleteModel: string;
+  /** Download and install new versions in the background (default on). */
+  autoUpdate: boolean;
   /** Anonymous usage counts (opt-in; see Settings > Privacy). */
   analytics: boolean;
   /** Editor colour theme from an installed extension (`ext:<id>/<label>`); '' = the app theme. */
@@ -290,8 +329,13 @@ export const DEFAULT_SETTINGS: AppSettings = {
   aiAutoApprove: false,
   aiMediaGen: false,
   imageModel: '',
+  imageSupplier: '',
+  aiVideoGen: false,
+  videoModel: '',
+  aiRouting: '',
   aiAutocomplete: true,
   aiAutocompleteModel: '',
+  autoUpdate: true,
   analytics: false,
   editorTheme: '',
   selectedModel: 'claude-sonnet-5',

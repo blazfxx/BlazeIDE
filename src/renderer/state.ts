@@ -28,6 +28,8 @@ export interface BusEvents {
   'ai-insert-at-cursor': { text: string };
   'ai-apply-edit': { path: string; original: string; modified: string };
   'ai-status': { streaming: boolean };
+  /** Put text back into the AI input (after reverting to a message). */
+  'ai-prefill': { text: string };
   /** Conversation size changed — drives the context meter. */
   'ai-context': { tokens: number; contextWindow: number };
   /** A saved chat was created/updated/deleted — history list should refresh. */
@@ -43,6 +45,7 @@ export interface BusEvents {
   'rename-selected-file': void;
   'open-palette': { mode: 'commands' | 'files' };
   'open-settings': void;
+  'open-blbots': void;
   'open-account': void;
   'new-terminal': void;
   'focus-ai-input': void;

@@ -30,15 +30,25 @@ fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-fn chat_path(root: &Path, id: &str) -> Result<PathBuf> {
+fn file_in(dir: &Path, id: &str) -> Result<PathBuf> {
     if !valid_id(id) {
         return Err(Error::msg("Invalid chat id"));
     }
-    Ok(chats_dir(root).join(format!("{id}.json")))
+    Ok(dir.join(format!("{id}.json")))
+}
+
+/// The folder a project's chats live in.
+pub fn dir_for(root: &Path) -> PathBuf {
+    chats_dir(root)
 }
 
 pub fn list(root: &Path) -> Vec<ChatSummary> {
-    let Ok(rd) = fs::read_dir(chats_dir(root)) else { return Vec::new() };
+    list_in(&chats_dir(root))
+}
+
+/// Chats in any folder (BlBots keep their threads with the bot).
+pub fn list_in(dir: &Path) -> Vec<ChatSummary> {
+    let Ok(rd) = fs::read_dir(dir) else { return Vec::new() };
     let mut out: Vec<ChatSummary> = rd
         .filter_map(|e| e.ok())
         .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
@@ -57,14 +67,22 @@ pub fn list(root: &Path) -> Vec<ChatSummary> {
 }
 
 pub fn load(root: &Path, id: &str) -> Result<Option<Value>> {
-    let p = chat_path(root, id)?;
+    load_in(&chats_dir(root), id)
+}
+
+pub fn load_in(dir: &Path, id: &str) -> Result<Option<Value>> {
+    let p = file_in(dir, id)?;
     let Ok(bytes) = fs::read(p) else { return Ok(None) };
     Ok(serde_json::from_slice(&bytes).ok())
 }
 
 pub fn save(root: &Path, chat: &Value) -> Result<()> {
+    save_in(&chats_dir(root), chat)
+}
+
+pub fn save_in(dir: &Path, chat: &Value) -> Result<()> {
     let id = chat.get("id").and_then(Value::as_str).ok_or_else(|| Error::msg("Chat has no id"))?;
-    let p = chat_path(root, id)?;
+    let p = file_in(dir, id)?;
     let body = serde_json::to_string(chat)?;
     if body.len() > MAX_CHAT_BYTES {
         return Err(Error::msg("This chat is too large to save"));
@@ -73,7 +91,11 @@ pub fn save(root: &Path, chat: &Value) -> Result<()> {
 }
 
 pub fn delete(root: &Path, id: &str) -> Result<()> {
-    let p = chat_path(root, id)?;
+    delete_in(&chats_dir(root), id)
+}
+
+pub fn delete_in(dir: &Path, id: &str) -> Result<()> {
+    let p = file_in(dir, id)?;
     match fs::remove_file(p) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
