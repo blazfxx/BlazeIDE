@@ -136,6 +136,11 @@ impl Drop for NoEcho {
     }
 }
 
+/// One line from stdin without echo when it is a terminal.
+pub fn read_secret_line() -> Result<String, String> {
+    read_secret("")
+}
+
 pub fn set_password_interactive(store: &Store) -> Result<(), String> {
     let a = read_secret(&format!("Choose a password for your phone (at least {} characters): ", auth::MIN_PASSWORD))?;
     if a.chars().count() < auth::MIN_PASSWORD {

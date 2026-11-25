@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 
 /// Discord application id ("BlazeCLI" in the Discord Developer Portal).
 /// Empty = presence off. `BLAZE_DISCORD_APP_ID` overrides it.
-pub const DISCORD_APP_ID: &str = "";
+pub const DISCORD_APP_ID: &str = "1574957922285523186";
 
 pub fn app_id() -> String {
     std::env::var("BLAZE_DISCORD_APP_ID").ok().filter(|v| !v.trim().is_empty()).unwrap_or_else(|| DISCORD_APP_ID.to_string())

@@ -7,6 +7,8 @@
 mod bots;
 mod config;
 mod oneshot;
+mod providers;
+mod update;
 mod rc;
 mod serve;
 mod session;
@@ -90,6 +92,19 @@ enum Cmd {
         /// Port for the phone server (default 47900).
         #[arg(long)]
         port: Option<u16>,
+    },
+    /// Update blaze to the newest build (--check only looks; --mode sets automatic updates).
+    Update {
+        #[arg(long)]
+        check: bool,
+        /// auto (default: install in the background), notify, or off.
+        #[arg(long)]
+        mode: Option<String>,
+    },
+    /// Your own OpenAI-compatible providers (requests go to them directly).
+    Providers {
+        #[command(subcommand)]
+        cmd: providers::ProvidersCmd,
     },
     /// BlBots: your AI bots, their routines and rooms.
     Bots {
@@ -185,6 +200,32 @@ pub fn open_browser(url: &str) -> std::io::Result<()> {
 
 async fn run(mut cli: Cli) -> Result<(), String> {
     let mut s = Session::open();
+    if let Some(Cmd::Update { check, mode }) = &cli.cmd {
+        if let Some(m) = mode {
+            let m = update::Mode::parse(m).ok_or("Use --mode auto, notify or off")?;
+            s.set_setting("cliUpdates", serde_json::json!(m.key()));
+            println!("Automatic updates: {}", m.key());
+            return Ok(());
+        }
+        let v = update::latest(&s.http).await?;
+        if !update::newer(&v, VERSION) {
+            println!("blaze {VERSION} is the newest version.");
+            return Ok(());
+        }
+        if *check {
+            println!("blaze {v} is available (you have {VERSION}). Run: blaze update");
+            return Ok(());
+        }
+        println!("Updating blaze {VERSION} -> {v}...");
+        let exe = update::install(&s.http, &v).await?;
+        println!("Updated {}. The new version runs from your next blaze command.", exe.display());
+        return Ok(());
+    }
+    if matches!(cli.cmd, Some(Cmd::Providers { .. })) {
+        if let Some(Cmd::Providers { cmd }) = cli.cmd.take() {
+            return providers::run(&mut s, cmd).await;
+        }
+    }
     if matches!(cli.cmd, Some(Cmd::Bots { .. })) {
         if let Some(Cmd::Bots { cmd }) = cli.cmd.take() {
             return bots::run(&mut s, cmd).await;
@@ -235,7 +276,7 @@ async fn run(mut cli: Cli) -> Result<(), String> {
             }
             return serve::serve(&mut s, opts).await;
         }
-        Some(Cmd::Bots { .. }) => unreachable!("handled above"),
+        Some(Cmd::Bots { .. }) | Some(Cmd::Providers { .. }) | Some(Cmd::Update { .. }) => unreachable!("handled above"),
         Some(Cmd::Mobile { cmd }) => {
             use blaze_core::remote::auth;
             return match cmd {
@@ -310,6 +351,7 @@ async fn main() {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
     let cli = Cli::parse();
+    update::cleanup();
     if let Err(e) = run(cli).await {
         eprintln!("blaze: {e}");
         std::process::exit(1);

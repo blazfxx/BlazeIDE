@@ -37,6 +37,7 @@ export interface BusEvents {
   'ai-mode-changed': { mode: AIMode };
   'git-branch-changed': { branch: string | null };
   'toggle-sidebar': void;
+  'sidebar-search': void;
   'toggle-ai-panel': void;
   'toggle-terminal': void;
   /** Delete the file currently selected in the sidebar tree (Cmd+Backspace). */

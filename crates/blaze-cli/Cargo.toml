@@ -24,6 +24,11 @@ uuid = { version = "1", features = ["v4"] }
 dirs = "5"
 textwrap = "0.16"
 unicode-width = "0.2"
+# Self-update: the release archives and their checksums.
+flate2 = "1"
+sha2 = "0.10"
+tar = "0.4"
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 keyring = { version = "3", features = ["apple-native", "windows-native"] }

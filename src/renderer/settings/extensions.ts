@@ -57,6 +57,14 @@ export function buildExtensionsSection(): HTMLElement[] {
     }
     for (const e of installed) {
       const row = el('div', 'prov-row ext-row');
+      const avatar = el('div', 'ext-avatar', escapeHtml((e.displayName[0] ?? '?').toUpperCase()));
+      if (e.icon && e.icon.startsWith('data:image/')) {
+        const img = document.createElement('img');
+        img.alt = '';
+        img.addEventListener('load', () => { avatar.textContent = ''; avatar.classList.add('has-icon'); avatar.appendChild(img); });
+        img.src = e.icon;
+      }
+      row.appendChild(avatar);
       const text = el('div', 'prov-row-text');
       text.appendChild(el('div', 'prov-row-name', `${escapeHtml(e.displayName)} <span class="ext-ver">${escapeHtml(e.version)}</span>`));
       text.appendChild(el('div', 'prov-row-sub', escapeHtml(summary(e))));
@@ -125,7 +133,6 @@ export function buildExtensionsSection(): HTMLElement[] {
       if (it.iconUrl) {
         const img = document.createElement('img');
         img.alt = '';
-        img.loading = 'lazy';
         img.referrerPolicy = 'no-referrer';
         img.addEventListener('load', () => { avatar.textContent = ''; avatar.classList.add('has-icon'); avatar.appendChild(img); });
         img.src = it.iconUrl;

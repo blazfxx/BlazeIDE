@@ -445,17 +445,21 @@ dependencies = [
  "clap",
  "crossterm",
  "dirs 5.0.1",
+ "flate2",
  "keyring",
  "libc",
  "ratatui",
  "serde",
  "serde_json",
+ "sha2",
+ "tar",
  "tempfile",
  "textwrap",
  "tokio",
  "tokio-util",
  "unicode-width",
  "uuid",
+ "zip",
 ]
 
 [[package]]

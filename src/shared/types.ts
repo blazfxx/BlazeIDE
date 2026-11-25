@@ -392,6 +392,8 @@ export interface InstalledExt {
   snippets: Array<{ language: string; path: string }>;
   /** Parts of the extension that cannot run here (its own code, grammars, commands…). */
   unsupported: string[];
+  /** The extension's own icon (data: URL), when it has one. */
+  icon?: string | null;
 }
 
 export interface ExtContributions {

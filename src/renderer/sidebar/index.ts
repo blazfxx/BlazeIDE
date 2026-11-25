@@ -288,6 +288,7 @@ export function initSidebar(host: HTMLElement): void {
     }
   });
 
+  bus.on('sidebar-search', () => toggleSearch(true));
   bus.on('project-opened', ({ name }) => {
     title.textContent = name;
     openBtnWrap.style.display = 'none';

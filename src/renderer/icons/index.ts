@@ -132,3 +132,14 @@ export const iconVideo = svg(
 export function icon(markup: string, cls = ''): string {
   return `<span class="icon ${cls}">${markup}</span>`;
 }
+
+// Activity bar (24px rendering of a 16 viewBox).
+export const iconFiles = svg(
+  '<path d="M5.5 1.5h4.5l2.5 2.5v7.5a.5.5 0 0 1-.5.5H5.5a.5.5 0 0 1-.5-.5V2a.5.5 0 0 1 .5-.5z"/><path d="M3 4.5v9a1 1 0 0 0 1 1h6"/>'
+);
+export const iconExtensions = svg(
+  '<rect x="2" y="7" width="3.5" height="3.5" rx=".6"/><rect x="2" y="11" width="3.5" height="3.5" rx=".6" transform="translate(0 -.5)"/><rect x="6" y="10.5" width="3.5" height="3.5" rx=".6"/><rect x="9" y="2" width="4.5" height="4.5" rx=".8" transform="rotate(12 11.25 4.25)"/>'
+);
+export const iconBots = svg(
+  '<rect x="2.5" y="5" width="11" height="8.5" rx="2.5"/><path d="M8 5V2.8"/><circle cx="8" cy="2.2" r=".7"/><circle cx="5.8" cy="9" r=".9"/><circle cx="10.2" cy="9" r=".9"/>'
+);

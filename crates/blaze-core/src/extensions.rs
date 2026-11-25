@@ -70,6 +70,10 @@ pub struct Installed {
     pub snippets: Vec<FileRef>,
     /// Parts of the extension we cannot run (grammars, commands, its own code…).
     pub unsupported: Vec<String>,
+    /// The extension's own icon as a data: URL (from its package; up to
+    /// 256 KB). Older installs have none.
+    #[serde(default)]
+    pub icon: Option<String>,
     #[serde(skip)]
     pub dir: PathBuf,
 }
@@ -439,6 +443,7 @@ pub fn install_vsix(bytes: &[u8], root: &Path, id: &str) -> Result<Installed> {
             unsupported.push(label.to_string());
         }
     }
+    let icon = icon_data_url(&mut zip, &text(&pkg, "icon"));
     let display = text(&pkg, "displayName");
     let info = Installed {
         id: id.to_string(),
@@ -448,6 +453,7 @@ pub fn install_vsix(bytes: &[u8], root: &Path, id: &str) -> Result<Installed> {
         themes,
         snippets,
         unsupported,
+        icon,
         dir: dir.clone(),
     };
     fs::write(tmp.join(MANIFEST), serde_json::to_vec_pretty(&info)?)?;
@@ -458,6 +464,26 @@ pub fn install_vsix(bytes: &[u8], root: &Path, id: &str) -> Result<Installed> {
     let _ = fs::remove_dir_all(&dir);
     fs::rename(&tmp, &dir)?;
     Ok(info)
+}
+
+/// The package's declared icon (png/jpg/svg/webp, up to 256 KB) as a data URL.
+fn icon_data_url<R: Read + std::io::Seek>(zip: &mut zip::ZipArchive<R>, rel: &str) -> Option<String> {
+    use base64::Engine;
+    let rel = clean_rel(rel).ok()?;
+    let mime = match rel.rsplit('.').next()?.to_ascii_lowercase().as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "svg" => "image/svg+xml",
+        "webp" => "image/webp",
+        _ => return None,
+    };
+    let mut f = zip.by_name(&format!("extension/{rel}")).ok()?;
+    if f.size() > 256 * 1024 {
+        return None;
+    }
+    let mut buf = Vec::new();
+    f.by_ref().take(256 * 1024 + 1).read_to_end(&mut buf).ok()?;
+    (buf.len() <= 256 * 1024).then(|| format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(&buf)))
 }
 
 /// Resolve `a/b/../c` without touching the disk.
@@ -606,6 +632,12 @@ mod tests {
         assert!(info.unsupported.iter().any(|u| u.contains("extension host")));
         assert!(info.unsupported.contains(&"syntax grammars".to_string()));
         assert!(!root.path().join("me.demo-1.2.3/out/ext.js").exists());
+        assert!(info.icon.is_none(), "no icon declared");
+        let with_icon = vsix(&[("extension/package.json", r#"{"version":"1.0.0","icon":"images/logo.png","contributes":{}}"#), ("extension/images/logo.png", "PNGDATA")]);
+        let ic = install_vsix(&with_icon, root.path(), "me.icon").unwrap();
+        assert_eq!(ic.icon.as_deref(), Some("data:image/png;base64,UE5HREFUQQ=="));
+        assert_eq!(list_installed(root.path()).iter().find(|e| e.id == "me.icon").unwrap().icon, ic.icon, "kept in the manifest");
+        uninstall(root.path(), "me.icon").unwrap();
         let c = contributions(root.path());
         assert_eq!(c.themes[0].json["colors"]["editor.foreground"], "#eee");
         assert_eq!(c.themes[0].json["colors"]["editor.background"], "#101010");

@@ -1,9 +1,7 @@
 //! Where the CLI keeps things. It shares the IDE's config folder (settings,
-//! custom providers, BlBots) and, on macOS/Windows, the IDE's keychain slot,
-//! so signing in once covers both.
-//!
-//! Linux has no Blaze IDE build and often no desktop keyring (servers), so the
-//! key is kept in a 0600 file in the config folder there.
+//! custom providers, BlBots) and its secrets, so signing in once covers both:
+//! Credential Manager on Windows, private 0600 files in the config folder on
+//! macOS and Linux.
 
 use std::path::PathBuf;
 
@@ -19,18 +17,19 @@ pub fn config_dir() -> PathBuf {
     dirs::config_dir().unwrap_or_else(|| PathBuf::from(".")).join(APP_ID)
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+/// Windows: Credential Manager (shared with Blaze IDE, never prompts).
+#[cfg(target_os = "windows")]
 mod store {
     const SERVICE: &str = "org.blazeapi.ide";
 
     fn entry(account: &str) -> Result<keyring::Entry, String> {
-        keyring::Entry::new(SERVICE, account).map_err(|e| format!("Could not open the system keychain: {e}"))
+        keyring::Entry::new(SERVICE, account).map_err(|e| format!("Could not open the credential store: {e}"))
     }
     pub fn load(account: &str) -> Option<String> {
         entry(account).ok()?.get_password().ok().filter(|k| !k.is_empty())
     }
     pub fn save(account: &str, key: &str) -> Result<(), String> {
-        entry(account)?.set_password(key).map_err(|e| format!("Could not save to the system keychain: {e}"))
+        entry(account)?.set_password(key).map_err(|e| format!("Could not save to the credential store: {e}"))
     }
     pub fn delete(account: &str) {
         if let Ok(e) = entry(account) {
@@ -39,38 +38,26 @@ mod store {
     }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+/// macOS: a private file shared with Blaze IDE (see blaze_core::secret_file
+/// for why not the Keychain); old Keychain items are imported once.
+#[cfg(target_os = "macos")]
 mod store {
-    use std::io::Write;
-
-    fn path(account: &str) -> std::path::PathBuf {
-        super::config_dir().join("keys").join(account)
-    }
+    use blaze_core::secret_file as f;
     pub fn load(account: &str) -> Option<String> {
-        std::fs::read_to_string(path(account)).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+        f::take_once(account, || keyring::Entry::new("org.blazeapi.ide", account).ok()?.get_password().ok())
     }
     pub fn save(account: &str, key: &str) -> Result<(), String> {
-        let p = path(account);
-        let dir = p.parent().expect("keys dir");
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-            let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
-            let tmp = p.with_extension("tmp");
-            let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp).map_err(|e| e.to_string())?;
-            f.write_all(key.as_bytes()).map_err(|e| e.to_string())?;
-            std::fs::rename(&tmp, &p).map_err(|e| e.to_string())
-        }
-        #[cfg(not(unix))]
-        {
-            let mut f = std::fs::File::create(&p).map_err(|e| e.to_string())?;
-            f.write_all(key.as_bytes()).map_err(|e| e.to_string())
-        }
+        f::save(account, key)
     }
     pub fn delete(account: &str) {
-        let _ = std::fs::remove_file(path(account));
+        f::delete(account)
     }
+}
+
+/// Linux: a private file (servers usually have no keyring).
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+mod store {
+    pub use blaze_core::secret_file::{delete, load, save};
 }
 
 const BLAZE_ACCOUNT: &str = "blazeapi-key";
@@ -100,6 +87,10 @@ pub fn load_secret(name: &str) -> Option<String> {
 
 pub fn save_secret(name: &str, value: &str) -> Result<(), String> {
     store::save(name, value)
+}
+
+pub fn delete_secret(name: &str) {
+    store::delete(name)
 }
 
 pub fn load_provider_key(id: &str) -> Option<String> {

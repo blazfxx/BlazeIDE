@@ -3,7 +3,7 @@
 A fast, agentic code editor powered by [BlazeAPI](https://blazeapi.org). One codebase builds native apps for macOS (Apple Silicon and Intel) and Windows.
 
 - **Every BlazeAPI model** your account can use, with live prices, in Ask, Plan and Agent modes.
-- **Sign in with BlazeAPI**: the browser does the sign-in; the app gets its own revocable key, kept in the macOS Keychain or Windows Credential Manager. Usage is billed to your BlazeAPI balance.
+- **Sign in with BlazeAPI**: the browser does the sign-in; the app gets its own revocable key, kept in Windows Credential Manager, or on macOS in a private file in the app's settings folder readable only by your account (the Keychain asked for your password after every update of these builds, which are not Developer ID signed). Usage is billed to your BlazeAPI balance.
 - Monaco editor, integrated terminal, project search and replace, live web preview with element comments, AI image and video generation into your project.
 - **`blaze` in the terminal**: the same agent, models and chats in a full-screen terminal chat, or `blaze -p "…"` in scripts. Ships inside the app (Settings > Command line) and as its own download for macOS, Windows and Linux.
 - **Continue on mobile**: open your chats on your phone, send messages and approve the agent's actions while away. Password sign-in (or a one-time QR), reachable over Wi-Fi, your own domain, a free Cloudflare quick tunnel, or the BlazeAPI relay.

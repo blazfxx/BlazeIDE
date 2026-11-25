@@ -78,6 +78,7 @@ impl Session {
             return Ok(());
         }
         let fetched = models::fetch_models(&self.http, &self.v1_base, self.key.as_deref(), &self.routing()).await;
+        let mut err = None;
         let mut list = match fetched {
             Ok((fresh, raw)) if !fresh.is_empty() => {
                 let _ = self.store.set_model_cache(raw);
@@ -86,7 +87,7 @@ impl Session {
             other => {
                 let disk = self.store.model_cache().map(|v| models::parse_models(&v)).unwrap_or_default();
                 if disk.is_empty() {
-                    return Err(match other {
+                    err = Some(match other {
                         Err(e) => e.to_string(),
                         Ok(_) => "BlazeAPI returned no models for this account (zero balance?).".into(),
                     });
@@ -94,11 +95,15 @@ impl Session {
                 disk
             }
         };
+        // Your own providers work even when BlazeAPI cannot be reached.
         for p in self.store.providers() {
             list.extend(blaze_core::providers::entries(&p));
         }
         self.models = list;
-        Ok(())
+        match err {
+            Some(e) if self.models.is_empty() => Err(e),
+            _ => Ok(()),
+        }
     }
 
     pub fn backend(&self) -> Backend {

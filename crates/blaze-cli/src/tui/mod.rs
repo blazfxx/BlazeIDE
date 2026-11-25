@@ -3,6 +3,7 @@
 
 pub mod commands;
 mod render;
+pub mod theme;
 
 use std::collections::HashSet;
 use std::io::{self, Write};
@@ -80,8 +81,20 @@ pub struct PwPrompt {
     pub then: Way,
 }
 
+/// API key entry for /provider add|key (one hidden field; empty = no key).
+pub struct KeyPrompt {
+    pub name: String,
+    pub url: String,
+    /// Some(id) = set the key of an existing provider.
+    pub existing: Option<String>,
+    pub value: String,
+    pub err: String,
+    pub busy: bool,
+}
+
 pub enum Overlay {
     Help,
+    Key(KeyPrompt),
     Picker(Picker),
     Password(PwPrompt),
     Rc,
@@ -107,6 +120,10 @@ enum UiMsg {
     RcLog(String),
     Rc(Box<Result<Remote, String>>),
     Info(String, Vec<String>),
+    /// /provider add: the provider's /models answer.
+    ProviderModels(blaze_core::providers::CustomProvider, Option<String>, Result<Vec<String>, String>),
+    /// Background update check (and the time to remember as "checked").
+    Update(crate::update::Found, Option<u64>),
 }
 
 enum RunResult {
@@ -154,6 +171,12 @@ pub struct App {
     always: HashSet<String>,
     running: Option<Running>,
     ui_tx: mpsc::UnboundedSender<UiMsg>,
+    /// Reload the model list on the next tick (a provider changed).
+    pub models_dirty: bool,
+    /// What the terminal said about its background at start (None = no answer).
+    pub detected_light: Option<bool>,
+    /// After that reload, open the model picker with this filter.
+    pub pick_after_reload: Option<String>,
     quit: bool,
     presence: Option<blaze_core::presence::Presence>,
     shown_what: String,
@@ -387,6 +410,50 @@ impl App {
                 }
             }
             UiMsg::Info(t, lines) => self.overlay = Some(Overlay::Info(t, lines)),
+            UiMsg::Update(found, stamp) => {
+                if let Some(t) = stamp {
+                    self.s.set_setting("cliUpdateChecked", serde_json::json!(t));
+                }
+                match found {
+                    crate::update::Found::None => {}
+                    crate::update::Found::Available(v) => self.note(format!("blaze {v} is available (you have {}). Type /update to install it.", crate::VERSION)),
+                    crate::update::Found::Installed(v) => self.note(format!("Updated blaze to {v}. It runs from the next time you start blaze.")),
+                    crate::update::Found::Failed(e) => self.note(e),
+                }
+            }
+            UiMsg::ProviderModels(mut p, key, res) => {
+                self.overlay = None;
+                let fetched = match res {
+                    Ok(m) if !m.is_empty() => {
+                        p.models = m;
+                        true
+                    }
+                    Ok(_) => false,
+                    Err(e) => {
+                        self.note(format!("Could not list its models ({e})."));
+                        false
+                    }
+                };
+                let p = match blaze_core::providers::sanitize(p) {
+                    Ok(p) => p,
+                    Err(e) => return self.err(e.to_string()),
+                };
+                if let Some(k) = &key {
+                    if let Err(e) = crate::config::save_secret(&format!("provider-{}", p.id), k) {
+                        return self.err(e);
+                    }
+                }
+                if let Err(e) = self.s.store.upsert_provider(p.clone()) {
+                    return self.err(e.to_string());
+                }
+                self.models_dirty = true;
+                if fetched || !p.models.is_empty() {
+                    self.note(format!("{} is ready with {} models. Its requests go straight to {} with your key, not through BlazeAPI.", p.name, p.models.len(), p.base_url));
+                    self.pick_after_reload = Some(format!("custom:{}/", p.id));
+                } else {
+                    self.note(format!("Added {}, but it listed no models. Add them with: blaze providers rm \"{}\" then blaze providers add \"{}\" {} --models a,b", p.name, p.name, p.name, p.base_url));
+                }
+            }
         }
     }
 
@@ -409,13 +476,13 @@ impl App {
 
     fn open_picker(&mut self, kind: PickKind) {
         let items: Vec<PickItem> = match kind {
-            PickKind::Model => self.s.models.iter().filter(|m| m.kind == "chat").map(|m| PickItem { id: m.id.clone(), label: m.display_name.clone(), detail: crate::session::price_text(m) }).collect(),
+            PickKind::Model => self.s.models.iter().filter(|m| m.kind == "chat").map(|m| PickItem { id: m.id.clone(), label: m.display_name.clone(), detail: if m.tags.iter().any(|t| t == "custom") { format!("{} · your provider", m.provider) } else { crate::session::price_text(m) } }).collect(),
             PickKind::Chats => blaze_core::chats::list(&self.root).into_iter().map(|c| PickItem { id: c.id, label: c.title, detail: format!("{} messages", c.message_count) }).collect(),
             PickKind::Bots => blaze_core::bots::Bots::open(&crate::config::config_dir()).list().into_iter().filter(|b| !b.hidden).map(|b| PickItem { label: format!("{} {}", b.avatar, b.name), detail: if b.title.is_empty() { b.engine.label().to_string() } else { b.title.clone() }, id: b.id }).collect(),
         };
         if items.is_empty() {
             self.note(match kind {
-                PickKind::Model => "No models loaded (are you signed in? /login).",
+                PickKind::Model => "No models yet: /login for BlazeAPI, or /provider add <name> <url> for your own.",
                 PickKind::Chats => "No saved chats in this project yet.",
                 PickKind::Bots => "No BlBots yet. Create one: blaze bots new Nova --soul \"...\" (or in Blaze IDE).",
             });
@@ -456,11 +523,122 @@ impl App {
         }
     }
 
-    fn set_model(&mut self, id: String) {
-        if !self.s.models.is_empty() && self.s.find_model(&id).is_none() {
-            self.err(format!("{id} is not in your model list."));
-            return;
+    /// `/provider` (list), `/provider add <name> <url>`, `/provider key <name>`,
+    /// `/provider models <name>`, `/provider rm <name>`.
+    fn provider_cmd(&mut self, arg: &str) {
+        let (sub, rest) = arg.split_once(' ').map(|(a, b)| (a, b.trim())).unwrap_or((arg, ""));
+        let find = |s: &crate::session::Session, k: &str| s.store.providers().into_iter().find(|p| p.id == k || p.name.eq_ignore_ascii_case(k.trim_matches('"')));
+        match sub {
+            "" | "list" => {
+                let mut lines = Vec::new();
+                for p in self.s.store.providers() {
+                    let key = if crate::config::load_provider_key(&p.id).is_some() { "key saved" } else { "no key" };
+                    lines.push(format!("{}  ·  {}  ·  {} models  ·  {key}", p.name, p.base_url, p.models.len()));
+                }
+                if lines.is_empty() {
+                    lines.push("No providers yet.".into());
+                }
+                lines.push(String::new());
+                lines.push("/provider add <name> <url>   add one (asks for its API key)".into());
+                lines.push("/provider key <name>         set or replace its key".into());
+                lines.push("/provider models <name>      refresh its model list".into());
+                lines.push("/provider rm <name>          remove it".into());
+                lines.push("/model                       pick one of its models".into());
+                lines.push(String::new());
+                lines.push("e.g. /provider add Ollama http://localhost:11434/v1".into());
+                lines.push("     /provider add OpenRouter https://openrouter.ai/api/v1".into());
+                lines.push(String::new());
+                lines.push("Your own providers are called straight from this computer with your key.".into());
+                lines.push("They never go through BlazeAPI and are not billed to your BlazeAPI balance.".into());
+                self.overlay = Some(Overlay::Info("Your providers".into(), lines));
+            }
+            "add" => {
+                let Some((name, url)) = rest.rsplit_once(' ') else {
+                    return self.err("Use /provider add <name> <url>, e.g. /provider add Ollama http://localhost:11434/v1");
+                };
+                let (name, url) = (name.trim().trim_matches('"').to_string(), url.trim().to_string());
+                if let Err(e) = blaze_core::providers::sanitize(blaze_core::providers::CustomProvider { id: String::new(), name: name.clone(), base_url: url.clone(), models: vec![] }) {
+                    return self.err(e.to_string());
+                }
+                if self.s.store.providers().iter().any(|p| p.name.eq_ignore_ascii_case(&name)) {
+                    return self.err(format!("You already have a provider called {name}."));
+                }
+                self.overlay = Some(Overlay::Key(KeyPrompt { name, url, existing: None, value: String::new(), err: String::new(), busy: false }));
+            }
+            "key" => match find(&self.s, rest) {
+                Some(p) => self.overlay = Some(Overlay::Key(KeyPrompt { name: p.name, url: p.base_url, existing: Some(p.id), value: String::new(), err: String::new(), busy: false })),
+                None => self.err("No such provider. Type /provider to see yours."),
+            },
+            "models" => match find(&self.s, rest) {
+                Some(p) => {
+                    let key = crate::config::load_provider_key(&p.id);
+                    self.fetch_provider_models(p, key);
+                }
+                None => self.err("No such provider. Type /provider to see yours."),
+            },
+            "rm" | "remove" | "delete" => match find(&self.s, rest) {
+                Some(p) => {
+                    if let Err(e) = self.s.store.remove_provider(&p.id) {
+                        return self.err(e.to_string());
+                    }
+                    crate::config::delete_secret(&format!("provider-{}", p.id));
+                    if self.model.starts_with(&format!("custom:{}/", p.id)) {
+                        self.note("That was your current model: pick another with /model.");
+                    }
+                    self.models_dirty = true;
+                    self.note(format!("Removed {}.", p.name));
+                }
+                None => self.err("No such provider. Type /provider to see yours."),
+            },
+            _ => self.err("Use /provider, /provider add <name> <url>, /provider key <name>, /provider models <name> or /provider rm <name>."),
         }
+    }
+
+    fn fetch_provider_models(&mut self, p: blaze_core::providers::CustomProvider, key: Option<String>) {
+        let (http, tx) = (self.s.http_custom.clone(), self.ui_tx.clone());
+        self.status = format!("Asking {} for its models...", p.name);
+        tokio::spawn(async move {
+            let res = blaze_core::providers::fetch_models(&http, &p.base_url, key.as_deref()).await.map_err(|e| e.to_string());
+            let _ = tx.send(UiMsg::ProviderModels(p, key, res));
+        });
+    }
+
+    /// Pick the palette from the `cliTheme` setting. `probe` = ask the
+    /// terminal (only at start: later the event reader owns the input).
+    pub fn apply_theme(&mut self, probe: bool) {
+        match self.s.setting_str("cliTheme").as_str() {
+            "light" => theme::set_light(true),
+            "dark" => theme::set_light(false),
+            _ => {
+                if probe {
+                    self.detected_light = theme::detect();
+                }
+                theme::set_light(self.detected_light.unwrap_or(false));
+            }
+        }
+    }
+
+    fn set_model(&mut self, id: String) {
+        let id = if self.s.models.is_empty() || self.s.find_model(&id).is_some() {
+            id
+        } else {
+            // `/model sonnet`: a unique match by name or id switches directly,
+            // several open the picker filtered to them.
+            let q = id.to_lowercase();
+            let hits: Vec<String> = self.s.models.iter().filter(|m| m.kind == "chat" && (m.id.to_lowercase().contains(&q) || m.display_name.to_lowercase().contains(&q))).map(|m| m.id.clone()).collect();
+            match hits.len() {
+                0 => return self.err(format!("No model matches {id}. Type /model to browse.")),
+                1 => hits[0].clone(),
+                _ => {
+                    self.open_picker(PickKind::Model);
+                    if let Some(Overlay::Picker(p)) = self.overlay.as_mut() {
+                        p.filter = id;
+                        p.sel = 0;
+                    }
+                    return;
+                }
+            }
+        };
         self.model = id;
         self.s.set_setting("cliModel", serde_json::json!(self.model));
         self.status = format!("Model: {}", self.model_label());
@@ -533,6 +711,7 @@ impl App {
             }
             "export" => self.export(),
             "status" => self.status_info(),
+            "provider" => self.provider_cmd(&arg),
             "login" => self.login(),
             "logout" => {
                 let (http, base, key) = (self.s.http.clone(), self.s.api_base.clone(), self.s.key.clone());
@@ -551,6 +730,42 @@ impl App {
                 self.onboard_sel = 0;
             }
             "rc" => self.rc_command(&arg),
+            "update" => match arg.as_str() {
+                "auto" | "notify" | "manual" | "off" => {
+                    let m = crate::update::Mode::parse(&arg).unwrap_or(crate::update::Mode::Auto);
+                    self.s.set_setting("cliUpdates", serde_json::json!(m.key()));
+                    self.status = match m {
+                        crate::update::Mode::Auto => "Updates: automatic (installed in the background, used next start)".into(),
+                        crate::update::Mode::Notify => "Updates: tell me, I'll type /update".into(),
+                        crate::update::Mode::Off => "Updates: off (type /update to check by hand)".into(),
+                    };
+                }
+                "" => {
+                    let (http, tx) = (self.s.http.clone(), self.ui_tx.clone());
+                    self.status = "Checking for a new blaze...".into();
+                    tokio::spawn(async move {
+                        let found = match crate::update::latest(&http).await {
+                            Err(e) => crate::update::Found::Failed(e),
+                            Ok(v) if !crate::update::newer(&v, crate::VERSION) => crate::update::Found::Failed(format!("blaze {} is the newest version.", crate::VERSION)),
+                            Ok(v) => match crate::update::install(&http, &v).await {
+                                Ok(_) => crate::update::Found::Installed(v),
+                                Err(e) => crate::update::Found::Failed(e),
+                            },
+                        };
+                        let _ = tx.send(UiMsg::Update(found, None));
+                    });
+                }
+                _ => self.err("Use /update (install now) or /update auto|notify|off."),
+            },
+            "theme" => match arg.as_str() {
+                "auto" | "dark" | "light" => {
+                    self.s.set_setting("cliTheme", serde_json::json!(arg));
+                    self.apply_theme(false);
+                    self.status = format!("Theme: {arg}{}", if arg == "auto" { if theme::is_light() { " (light terminal)" } else { " (dark terminal)" } } else { "" });
+                }
+                "" => self.status = format!("Theme: {} · /theme auto|dark|light", self.s.setting_str("cliTheme").chars().next().map(|_| self.s.setting_str("cliTheme")).unwrap_or_else(|| "auto".into())),
+                _ => self.err("Use /theme auto, /theme dark or /theme light."),
+            },
             "discord" => {
                 let on = arg != "off";
                 self.s.set_setting("discordStatus", serde_json::json!(on));
@@ -947,6 +1162,49 @@ impl App {
                 }
                 _ => {}
             },
+            Overlay::Key(kp) => match k.code {
+                KeyCode::Esc => self.overlay = None,
+                _ if kp.busy => {}
+                KeyCode::Backspace => {
+                    kp.value.pop();
+                }
+                KeyCode::Char(c) => kp.value.push(c),
+                KeyCode::Enter => {
+                    let key = Some(kp.value.trim().to_string()).filter(|v| !v.is_empty());
+                    match kp.existing.clone() {
+                        Some(id) => {
+                            let r = match &key {
+                                Some(v) => crate::config::save_secret(&format!("provider-{id}"), v),
+                                None => {
+                                    crate::config::delete_secret(&format!("provider-{id}"));
+                                    Ok(())
+                                }
+                            };
+                            match r {
+                                Ok(()) => {
+                                    let name = kp.name.clone();
+                                    self.overlay = None;
+                                    self.note(if key.is_some() { format!("Saved the key for {name}.") } else { format!("Removed the key for {name}.") });
+                                }
+                                Err(e) => kp.err = e,
+                            }
+                        }
+                        None => {
+                            kp.busy = true;
+                            kp.err.clear();
+                            let p = blaze_core::providers::CustomProvider { id: String::new(), name: kp.name.clone(), base_url: kp.url.clone(), models: vec![] };
+                            match blaze_core::providers::sanitize(p) {
+                                Ok(p) => self.fetch_provider_models(p, key),
+                                Err(e) => {
+                                    kp.busy = false;
+                                    kp.err = e.to_string();
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            },
             Overlay::Password(pw) => match k.code {
                 KeyCode::Esc => self.overlay = None,
                 KeyCode::Backspace => {
@@ -1171,6 +1429,9 @@ pub async fn run(mut s: Session, root: PathBuf, model: String, mode: String, app
         always: HashSet::new(),
         running: None,
         ui_tx,
+        models_dirty: false,
+        detected_light: None,
+        pick_after_reload: None,
         quit: false,
         presence: None,
         shown_what: String::new(),
@@ -1189,6 +1450,18 @@ pub async fn run(mut s: Session, root: PathBuf, model: String, mode: String, app
     }
 
     enable_raw_mode().map_err(|e| e.to_string())?;
+    app.apply_theme(true);
+    {
+        let mode = crate::update::Mode::parse(&app.s.setting_str("cliUpdates")).unwrap_or(crate::update::Mode::Auto);
+        let last = app.s.store.settings().get("cliUpdateChecked").and_then(|v| v.as_u64()).unwrap_or(0);
+        let (http, tx) = (app.s.http.clone(), app.ui_tx.clone());
+        tokio::spawn(async move {
+            let (found, stamp) = crate::update::background(&http, mode, last).await;
+            if stamp.is_some() {
+                let _ = tx.send(UiMsg::Update(found, stamp));
+            }
+        });
+    }
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, crossterm::event::EnableBracketedPaste).map_err(|e| e.to_string())?;
     let mut term = Terminal::new(CrosstermBackend::new(stdout)).map_err(|e| e.to_string())?;
@@ -1244,7 +1517,9 @@ async fn event_loop(term: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut
                 match ev {
                     Event::Key(k) if k.kind == KeyEventKind::Press => app.on_key(k, &etx, &htx),
                     Event::Paste(p) => {
-                        if let Some(Overlay::Password(pw)) = app.overlay.as_mut() {
+                        if let Some(Overlay::Key(kp)) = app.overlay.as_mut() {
+                            kp.value.push_str(p.trim());
+                        } else if let Some(Overlay::Password(pw)) = app.overlay.as_mut() {
                             if pw.second { pw.b.push_str(p.trim()) } else { pw.a.push_str(p.trim()) }
                         } else if app.overlay.is_none() {
                             for c in p.chars() { app.insert(if c == '\r' { '\n' } else { c }); }
@@ -1268,6 +1543,17 @@ async fn event_loop(term: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut
                 app.finish_if_done().await;
                 n += 1;
                 if n.is_multiple_of(8) { app.poll_rc(); }
+                if app.models_dirty {
+                    app.models_dirty = false;
+                    let _ = app.s.load_models(true).await;
+                    if let Some(f) = app.pick_after_reload.take() {
+                        app.open_picker(PickKind::Model);
+                        if let Some(Overlay::Picker(p)) = app.overlay.as_mut() {
+                            p.filter = f;
+                            p.sel = 0;
+                        }
+                    }
+                }
             }
         }
         if app.quit {

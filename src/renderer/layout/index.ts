@@ -2,7 +2,7 @@
 // Panel sizes load from settings and persist (debounced) after drags.
 
 import { bus, el, escapeHtml, state } from '../state';
-import { icon, iconGear } from '../icons/index';
+import { icon, iconBots, iconExtensions, iconFiles, iconGear, iconSearch } from '../icons/index';
 
 export interface LayoutEls {
   sidebarEl: HTMLElement;
@@ -70,18 +70,61 @@ export function initLayout(app: HTMLElement): LayoutEls {
   settingsBtn.title = window.void.platform() === 'mac' ? 'Settings (⌘,)' : 'Settings (Ctrl+,)';
   settingsBtn.addEventListener('click', () => bus.emit('open-settings', undefined));
 
-  // BlBots, left of the gear.
-  const botsBtn = el('button', 'titlebar-bots', 'BlBots');
-  botsBtn.title = 'BlBots: your AI bots and rooms';
-  botsBtn.addEventListener('click', () => bus.emit('open-blbots', undefined));
-
-  titlebar.append(titleText, botsBtn, settingsBtn);
+  titlebar.append(titleText, settingsBtn);
 
   const main = el('div', '');
   main.id = 'main';
 
+  // VS Code-style activity bar: one icon per view, Settings at the bottom.
+  const activity = el('div', '');
+  activity.id = 'activitybar';
   const sidebar = el('div', '');
   sidebar.id = 'sidebar';
+  sidebar.dataset.view = 'files';
+  const filesView = el('div', 'sb-view sb-files');
+  const extView = el('div', 'sb-view sb-ext');
+  sidebar.append(filesView, extView);
+  let extBuilt = false;
+  const actBtn = (svgStr: string, tip: string, view: string | null, onClick?: () => void): HTMLElement => {
+    const b = el('button', 'act-btn', icon(svgStr));
+    b.title = tip;
+    if (view) b.dataset.view = view;
+    b.addEventListener('click', () => {
+      if (onClick) { onClick(); return; }
+      if (!view) return;
+      const collapsed = sidebar.classList.contains('collapsed');
+      if (!collapsed && sidebar.dataset.view === view && view !== 'search') {
+        bus.emit('toggle-sidebar', undefined);
+        return;
+      }
+      if (collapsed) bus.emit('toggle-sidebar', undefined);
+      sidebar.dataset.view = view === 'search' ? 'files' : view;
+      if (view === 'search') bus.emit('sidebar-search', undefined);
+      if (view === 'extensions' && !extBuilt) {
+        extBuilt = true;
+        const head = el('div', 'sb-view-head', 'Extensions');
+        const body = el('div', 'sb-ext-body');
+        extView.append(head, body);
+        void import('../settings/extensions').then((m) => { for (const row of m.buildExtensionsSection()) body.appendChild(row); });
+      }
+      markActive();
+    });
+    return b;
+  };
+  const acts = [
+    actBtn(iconFiles, 'Explorer', 'files'),
+    actBtn(iconSearch, 'Search', 'search'),
+    actBtn(iconExtensions, 'Extensions', 'extensions'),
+    actBtn(iconBots, 'BlBots: your AI bots and rooms', null, () => bus.emit('open-blbots', undefined)),
+  ];
+  const spacer = el('div', 'act-spacer');
+  const actSettings = actBtn(iconGear, 'Settings', null, () => bus.emit('open-settings', undefined));
+  activity.append(...acts, spacer, actSettings);
+  const markActive = (): void => {
+    const collapsed = sidebar.classList.contains('collapsed');
+    for (const b of acts) b.classList.toggle('active', !collapsed && !!b.dataset.view && b.dataset.view === sidebar.dataset.view);
+  };
+  markActive();
 
   const center = el('div', '');
   center.id = 'center';
@@ -105,7 +148,7 @@ export function initLayout(app: HTMLElement): LayoutEls {
     persistSizes();
   });
 
-  main.append(sidebar, sidebarResizer, center, aiResizer, aiPanel);
+  main.append(activity, sidebar, sidebarResizer, center, aiResizer, aiPanel);
 
   const termResizer = makeResizer('resizer-term', (e) => {
     sizes.terminalHeight = Math.min(
@@ -137,6 +180,7 @@ export function initLayout(app: HTMLElement): LayoutEls {
   bus.on('toggle-sidebar', () => {
     sidebar.classList.toggle('collapsed');
     sidebarResizer.classList.toggle('collapsed');
+    markActive();
   });
   bus.on('toggle-ai-panel', () => {
     aiPanel.classList.toggle('collapsed');
@@ -171,7 +215,7 @@ export function initLayout(app: HTMLElement): LayoutEls {
   });
 
   return {
-    sidebarEl: sidebar,
+    sidebarEl: filesView,
     tabbarEl: tabbar,
     editorHostEl: editorHost,
     aiPanelEl: aiPanel,

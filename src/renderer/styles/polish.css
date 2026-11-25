@@ -72,7 +72,37 @@ input[type="checkbox"] { accent-color: var(--accent); width: 15px; height: 15px;
 .set-nav-item.active { background: var(--bg-active); font-weight: 550; }
 
 /* ---- titlebar ---- */
-#titlebar .titlebar-bots { height: 22px; border-radius: 999px; padding: 0 12px; font-size: 11.5px; border-color: var(--border-soft); background: var(--bg-elevated); }
+/* macOS 26 draws taller window chrome with lower traffic lights: give the
+   overlay title bar the same height so our controls line up with them. */
+:root[data-platform="mac"] { --titlebar-h: 38px; }
+:root[data-platform="mac"] #titlebar { padding-left: 84px; }
+#titlebar .titlebar-settings { height: 26px; width: 26px; padding: 0; }
+
+/* ---- activity bar (VS Code style) ---- */
+#activitybar { width: 48px; flex: none; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 0 10px; background: var(--bg-base); border-right: 1px solid var(--border-soft); }
+#activitybar .act-btn { width: 38px; height: 38px; padding: 0; border: none; background: transparent; color: var(--text-secondary); border-radius: var(--radius-md); position: relative; }
+#activitybar .act-btn svg { width: 21px; height: 21px; }
+#activitybar .act-btn:hover { color: var(--text-primary); background: var(--bg-hover); }
+#activitybar .act-btn.active { color: var(--text-primary); background: var(--bg-active); }
+#activitybar .act-btn.active::before { content: ''; position: absolute; left: -5px; top: 9px; bottom: 9px; width: 3px; border-radius: 3px; background: var(--accent); }
+#activitybar .act-spacer { flex: 1; }
+
+/* Sidebar views: Explorer (files + search) and Extensions. */
+#sidebar .sb-view { display: none; flex: 1; min-height: 0; flex-direction: column; }
+#sidebar[data-view="files"] .sb-files, #sidebar[data-view="extensions"] .sb-ext { display: flex; }
+.sb-view-head { font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--text-secondary); padding: 12px 14px 8px; flex: none; }
+.sb-ext-body { flex: 1; overflow-y: auto; padding: 0 10px 20px; }
+.sb-ext-body .set-row { background: transparent; border: none; border-radius: 0; padding: 6px 2px 12px; margin: 0; }
+.sb-ext-body .set-row + .set-row { border-top: 1px solid var(--border-soft); }
+.sb-ext-body .set-row-desc { max-width: none; }
+.sb-ext-body .prov-row { padding: 8px 6px; border-radius: var(--radius-md); gap: 10px; }
+.sb-ext-body .prov-row:hover { background: var(--bg-hover); }
+.sb-ext-body .prov-row-sub { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.sb-ext-body .prov-row > button { height: 26px; padding: 0 10px; font-size: 11.5px; }
+.sb-ext-body input[type="search"] { width: 100%; }
+.ext-avatar { width: 36px; height: 36px; flex: none; border-radius: 9px; background: var(--bg-active); display: grid; place-items: center; font-weight: 600; overflow: hidden; }
+.ext-avatar.has-icon { background: transparent; }
+.ext-avatar img { width: 100%; height: 100%; object-fit: contain; }
 
 /* ---- shared surfaces ---- */
 .bb-menu, .ctx-menu, .context-menu { border-radius: var(--radius-md); box-shadow: var(--shadow-lg); }
@@ -170,3 +200,18 @@ select.bb-chip { padding: 0 28px 0 14px; }
 .bb-inline { display: flex; gap: 7px; align-items: center; padding: 6px 12px; border-radius: 999px; background: var(--bg-elevated); border: 1px solid var(--border-soft); font-size: 12.5px; cursor: pointer; }
 .bb-computer { width: min(1320px, 96vw); height: min(880px, 92vh); background: var(--bg-panel); border-radius: var(--radius-xl); display: flex; flex-direction: column; overflow: hidden; box-shadow: var(--shadow-lg); }
 .bb-computer iframe { flex: 1; border: 0; background: #000; }
+/* Extensions sidebar: compact, VS Code-like rows. */
+.sb-ext-body .set-row-desc { display: none; }
+.sb-ext-body .set-row-title { font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--text-secondary); }
+.sb-ext-body .set-row-block { gap: 6px; }
+.sb-ext-body select { width: 100%; min-width: 0; }
+.sb-ext-body .prov-row { display: flex; align-items: center; border: none; background: transparent; padding: 7px 6px; margin: 0; }
+.sb-ext-body .prov-row-text { flex: 1; min-width: 0; }
+.sb-ext-body .prov-row-name { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sb-ext-body .prov-row-name .ext-ver { font-weight: 400; color: var(--text-secondary); margin-left: 4px; }
+.sb-ext-body .prov-row-sub { -webkit-line-clamp: 1; font-size: 11.5px; }
+.sb-ext-body .prov-row-sub + .prov-row-sub { display: none; }
+.sb-ext-body .prov-row > button { flex: none; }
+.sb-ext-body .ext-chips { margin: 6px 0 4px; }
+:root { --sidebar-w: 260px; }
+.sb-ext-body .prov-row > button { height: 24px; padding: 0 9px; font-size: 11px; }

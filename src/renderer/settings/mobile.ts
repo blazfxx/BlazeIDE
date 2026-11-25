@@ -20,6 +20,12 @@ export function buildMobileSection(): HTMLElement[] {
   const devBox = el('div', 'mobile-devices');
   let st: MobileStatus | null = null;
   let busy = false;
+  // The user changed a way-in choice that is not applied yet: the 4 s status
+  // refresh must not overwrite it. (Checkboxes are not focused on click in
+  // WebKit, so "is something focused in there" was not enough.)
+  let dirty = false;
+  let shownQr = '';
+  let lastUrls = '';
   let timer = 0;
 
   // ---- password ----
@@ -80,12 +86,19 @@ export function buildMobileSection(): HTMLElement[] {
     way(lan, 'Same Wi-Fi (IP address)', 'Your phone opens http://<this computer\'s IP>:<port> on the same network. Plain http: use it only on a network you trust, or forward the port on your router at your own risk.'),
     portLine,
   );
+  waysBox.addEventListener('input', () => { dirty = true; applyMsg.textContent = 'Not applied yet: press Apply.'; });
+  waysBox.addEventListener('change', () => { dirty = true; applyMsg.textContent = 'Not applied yet: press Apply.'; });
   const applyRow = el('div', 'mobile-inline');
   applyRow.append(applyBtn, applyMsg);
   waysBox.appendChild(applyRow);
 
   const save = (on: boolean): void => {
-    applyMsg.textContent = on ? 'Starting…' : 'Stopping…';
+    if (on && st && !st.hasPassword) { applyMsg.textContent = 'Choose a phone password first (above).'; return; }
+    if (on && !lan.checked && !quick.checked && !relay.checked && !(useDomain.checked && domain.value.trim())) {
+      applyMsg.textContent = 'Pick at least one way your phone reaches this computer.';
+      return;
+    }
+    applyMsg.textContent = on ? (quick.checked ? 'Starting… (the first quick tunnel downloads cloudflared, about 20 s)' : 'Starting…') : 'Stopping…';
     applyBtn.disabled = true;
     busy = true;
     const p = Number(port.value) || undefined;
@@ -100,7 +113,11 @@ export function buildMobileSection(): HTMLElement[] {
       });
     };
     void go()
-      .then((s) => { applyMsg.textContent = s.error ? '' : on ? 'Running.' : 'Off.'; render(s); })
+      .then((s) => {
+        dirty = false;
+        applyMsg.textContent = s.error ? '' : !on ? 'Off.' : s.urls.length ? 'Running: open an address below on your phone.' : 'Running, waiting for an address…';
+        render(s);
+      })
       .catch((e: unknown) => { applyMsg.textContent = String(e instanceof Error ? e.message : e); })
       .finally(() => { applyBtn.disabled = false; busy = false; });
   };
@@ -121,12 +138,15 @@ export function buildMobileSection(): HTMLElement[] {
     if (s.error) statusBox.appendChild(text('div', 'setting-error mobile-left', s.error));
     if (s.relay && s.relayState && s.relayState !== 'online') statusBox.appendChild(text('div', 'set-row-desc', `Relay: ${s.relayState}`));
     pwBtn.textContent = s.hasPassword ? 'Change password' : 'Save password';
-    if (!busy && document.activeElement?.closest('.mobile-ways') == null) {
+    if (!busy && !dirty && document.activeElement?.closest('.mobile-ways') == null) {
       lan.checked = s.lan; quick.checked = s.quickTunnel; relay.checked = s.relay;
       useDomain.checked = !!s.domain; domain.value = s.domain ?? ''; viaTunnel.checked = s.domainTunnel;
       port.value = String(s.port);
       token.placeholder = s.hasTunnelToken ? 'Token saved (paste a new one to replace it)' : 'Cloudflare tunnel token (kept in your keychain)';
     }
+    const urlKey = JSON.stringify([s.enabled, s.urls]);
+    if (urlKey !== lastUrls) {
+    lastUrls = urlKey;
     urlsBox.textContent = '';
     if (!s.urls.length) urlsBox.appendChild(text('div', 'set-row-desc', s.enabled ? 'No address yet.' : 'Turn it on to get an address.'));
     for (const u of s.urls) {
@@ -150,6 +170,8 @@ export function buildMobileSection(): HTMLElement[] {
       btns.append(qrBtn, copy);
       row.append(label, a, btns, qrBox);
       urlsBox.appendChild(row);
+      if (u.url === s.urls[0]?.url && shownQr !== u.url) { shownQr = u.url; qrBtn.click(); }
+    }
     }
     devBox.textContent = '';
     if (!s.devices.length) devBox.appendChild(text('div', 'set-row-desc', 'No phones signed in.'));
