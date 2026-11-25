@@ -346,3 +346,42 @@ select.bb-chip { padding: 0 28px 0 14px; }
 
 /* File icon themes from extensions: pictures instead of Blaze's line icons. */
 .tree-icon img.ti { width: 16px; height: 16px; display: block; }
+
+/* ---- Onboarding: the generic 30px button height crushed the theme cards
+   (only a sliver of the preview showed) and left Skip/Continue uneven. ---- */
+.onb-card { width: 460px; }
+.onb-theme { height: auto; padding: 12px 12px 10px; gap: 10px; border-radius: 14px; background: var(--bg-panel); }
+.onb-theme .onb-swatch { height: 72px; }
+.onb-theme.selected { border-color: var(--accent); box-shadow: 0 0 0 3px var(--focus-ring); }
+.onb-theme-name { font-weight: 600; }
+.onb-actions { align-items: stretch; }
+.onb-actions button, .onb-actions .onb-skip, .onb-actions .onb-done, .onb-choice { height: 42px; padding: 0 18px; border-radius: 12px; font-size: 14px; }
+.onb-actions .onb-done { flex: 1; font-weight: 700; }
+.onb-toggle-row { padding: 14px 16px; margin-top: 8px; border-radius: 12px; text-align: left; }
+.onb-toggle-hint { font-size: 12px; line-height: 1.45; color: var(--text-secondary); margin-top: 3px; }
+
+/* Auto-contrast (custom background) puts a dark halo behind text; on light
+   buttons that smears dark text into grey. */
+body[data-auto-contrast] button.primary, body[data-auto-contrast] .primary,
+body[data-auto-contrast] .onb-screen, body[data-auto-contrast] .onb-screen * { text-shadow: none; }
+
+/* ---- Windows: one title bar with the menus in it (layout/winTitlebar.ts) ---- */
+:root[data-platform="windows"] { --titlebar-h: 36px; }
+#titlebar.win-tb { padding: 0; justify-content: space-between; border-bottom: 1px solid var(--border); background: var(--bg-panel); color: var(--text-secondary); }
+body[data-has-bg="1"] #titlebar.win-tb { background: color-mix(in srgb, var(--bg-panel) 62%, transparent); }
+.win-tb .tb-left { display: flex; align-items: center; height: 100%; padding-left: 10px; gap: 4px; position: relative; z-index: 1; }
+.win-tb .tb-logo { width: 28px; display: grid; place-items: center; -webkit-app-region: drag; }
+.win-tb .tb-menus { display: flex; align-items: center; gap: 1px; }
+.win-tb .tb-top { height: 26px; padding: 0 9px; border: 0; border-radius: 6px; background: transparent; color: var(--text-secondary); font-size: 12.5px; font-weight: 500; }
+.win-tb .tb-top:hover, .win-tb .tb-top.open { background: var(--bg-hover); color: var(--text-primary); }
+.win-tb .tb-title { position: absolute; left: 50%; transform: translateX(-50%); font-size: 12px; white-space: nowrap; pointer-events: none; }
+.win-tb .tb-right { display: flex; align-items: stretch; height: 100%; position: relative; z-index: 1; }
+#titlebar.win-tb .titlebar-settings.tb-gear { position: static; transform: none; align-self: center; margin-right: 6px; }
+.win-tb .tb-win { width: 46px; height: 100%; border: 0; border-radius: 0; background: transparent; color: var(--text-primary); display: grid; place-items: center; padding: 0; }
+.win-tb .tb-win:hover { background: var(--bg-hover); }
+.win-tb .tb-close:hover { background: #e81123; color: #fff; }
+.tb-menu { position: fixed; z-index: 1000; min-width: 250px; padding: 5px; border-radius: 10px; background: var(--bg-elevated); border: 1px solid var(--border); box-shadow: var(--shadow-lg); display: flex; flex-direction: column; }
+.tb-menu .tb-item { display: flex; justify-content: space-between; align-items: center; gap: 24px; height: 30px; padding: 0 12px; border: 0; border-radius: 6px; background: transparent; color: var(--text-primary); font-size: 13px; font-weight: 400; text-align: left; }
+.tb-menu .tb-item:hover { background: var(--bg-hover); }
+.tb-menu .tb-keys { color: var(--text-secondary); font-size: 12px; }
+.tb-menu .tb-sep { height: 1px; margin: 5px 8px; background: var(--border); }

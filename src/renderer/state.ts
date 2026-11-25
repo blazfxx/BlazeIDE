@@ -49,6 +49,10 @@ export interface BusEvents {
   'open-palette': { mode: 'commands' | 'files' };
   'open-settings': void;
   'open-blbots': void;
+  /** A menu item from the Windows title bar menus (same actions as the native menu). */
+  'menu-action': import('../shared/ipc').MenuAction;
+  /** Edit menu: undo/redo/cut/copy/paste/selectAll on whatever has focus. */
+  'edit-command': import('./layout/winTitlebar').EditCommand;
   /** Show an extension's page (from the Extensions sidebar). */
   'open-extension': { namespace: string; name: string; item?: import('../shared/types').MarketItem };
   'open-account': void;

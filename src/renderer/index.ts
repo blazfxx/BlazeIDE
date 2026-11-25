@@ -198,6 +198,7 @@ async function boot(): Promise<void> {
   initWorkbenchTheme();
   initIconThemes();
   window.void.onMenu((action) => dispatch(action, editor));
+  bus.on('menu-action', (action) => dispatch(action, editor));
   bindKeys(editor);
 
   bus.emit('session-changed', session);

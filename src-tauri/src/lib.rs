@@ -126,6 +126,8 @@ pub fn run() {
                 media_dir,
             });
             let handle = app.handle().clone();
+            // Windows draws its menus in the page's title bar instead.
+            #[cfg(not(target_os = "windows"))]
             app.set_menu(menu::build(&handle)?)?;
             app.on_menu_event(|app, ev| menu::on_event(app, ev.id().as_ref()));
             windows::open(&handle, None)?;

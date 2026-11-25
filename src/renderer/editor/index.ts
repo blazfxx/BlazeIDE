@@ -8,6 +8,7 @@ import type { Monaco } from '../monaco-loader-client';
 import type * as MonacoTypes from 'monaco-editor';
 import type { AppSettings } from '../../shared/types';
 import { bus, el, state } from '../state';
+import { runEditCommand } from '../layout/winTitlebar';
 import { TabStrip } from './tabs';
 import { languageForPath } from './languages';
 import { createDiffSession } from './diff';
@@ -438,6 +439,14 @@ export function initEditorArea(tabbarEl: HTMLElement, hostEl: HTMLElement): Edit
   bus.on('ai-insert-at-cursor', ({ text }) => area.insertAtCursor(text));
   bus.on('ai-apply-edit', ({ path, original, modified }) => void area.showDiff(path, original, modified));
   bus.on('settings-changed', (s) => area.applySettings(s));
+  bus.on('edit-command', (cmd) => {
+    runEditCommand(cmd, (id) => {
+      if (!editor || !editor.hasTextFocus()) return false;
+      editor.focus();
+      editor.trigger('menu', id, null);
+      return true;
+    });
+  });
   bus.on('extensions-changed', () => area.reloadExtensions());
 
   showSurface('empty');

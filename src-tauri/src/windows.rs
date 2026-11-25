@@ -52,6 +52,11 @@ pub fn open<R: Runtime>(app: &AppHandle<R>, query: Option<Vec<(&str, String)>>) 
         });
     #[cfg(target_os = "macos")]
     let builder = builder.title_bar_style(tauri::TitleBarStyle::Overlay).hidden_title(true);
+    // Windows: no native frame or menu row; the page draws one title bar with
+    // the menus in it (layout/winTitlebar.ts). Tauri keeps the resize borders
+    // and the drop shadow of undecorated windows.
+    #[cfg(target_os = "windows")]
+    let builder = builder.decorations(false).shadow(true);
     builder.build()?;
     Ok(())
 }

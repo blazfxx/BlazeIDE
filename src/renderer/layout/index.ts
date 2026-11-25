@@ -3,6 +3,7 @@
 
 import { bus, el, escapeHtml, state } from '../state';
 import { icon, iconBots, iconExtensions, iconFiles, iconGear, iconSearch } from '../icons/index';
+import { initWindowsTitlebar } from './winTitlebar';
 
 export interface LayoutEls {
   sidebarEl: HTMLElement;
@@ -71,6 +72,7 @@ export function initLayout(app: HTMLElement): LayoutEls {
   settingsBtn.addEventListener('click', () => bus.emit('open-settings', undefined));
 
   titlebar.append(titleText, settingsBtn);
+  if (window.void.platform() === 'windows') initWindowsTitlebar(titlebar, titleText, settingsBtn);
 
   const main = el('div', '');
   main.id = 'main';
