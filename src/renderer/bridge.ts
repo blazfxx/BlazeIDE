@@ -110,6 +110,7 @@ const api: VoidAPI = {
   pickMedia: (kind) => invoke('pick_media', { kind }),
   cliStatus: () => invoke('cli_status'),
   cliInstall: () => invoke('cli_install'),
+  presenceSet: (what) => invoke('presence_set', { what }),
   mobileStatus: () => invoke('mobile_status'),
   mobileSetPassword: (password) => invoke('mobile_set_password', { password }),
   mobileConfigure: (cfg) => invoke('mobile_configure', { cfg }),

@@ -226,6 +226,8 @@ export interface AppSettings {
   autoUpdate: boolean;
   /** Anonymous usage counts (opt-in; see Settings > Privacy). */
   analytics: boolean;
+  /** Discord status "Working on <file> - BlazeCLI - blazeapi.org". */
+  discordStatus: boolean;
   /** Editor colour theme from an installed extension (`ext:<id>/<label>`); '' = the app theme. */
   editorTheme: string;
   selectedModel: string;
@@ -337,6 +339,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   aiAutocompleteModel: '',
   autoUpdate: true,
   analytics: false,
+  discordStatus: true,
   editorTheme: '',
   selectedModel: 'claude-sonnet-5',
   aiMode: 'ask',

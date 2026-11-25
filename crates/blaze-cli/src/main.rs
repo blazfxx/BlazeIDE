@@ -7,6 +7,7 @@
 mod bots;
 mod config;
 mod oneshot;
+mod rc;
 mod serve;
 mod session;
 mod tui;
@@ -21,7 +22,7 @@ use serde_json::json;
 use session::Session;
 
 /// Stamped by CI (same number as the Blaze IDE release); local builds say 0.1.0.
-const VERSION: &str = match option_env!("BLAZE_VERSION") {
+pub const VERSION: &str = match option_env!("BLAZE_VERSION") {
     Some(v) => v,
     None => env!("CARGO_PKG_VERSION"),
 };
@@ -172,7 +173,7 @@ async fn login(s: &mut Session, paste: bool) -> Result<(), String> {
     Ok(())
 }
 
-fn open_browser(url: &str) -> std::io::Result<()> {
+pub fn open_browser(url: &str) -> std::io::Result<()> {
     #[cfg(target_os = "macos")]
     let r = std::process::Command::new("open").arg(url).spawn();
     #[cfg(target_os = "windows")]

@@ -14,14 +14,23 @@ function t(tag: keyof HTMLElementTagNameMap, cls: string, text?: string): HTMLEl
   return e;
 }
 
-function avatar(b: { avatar: string; color: string; name: string }): HTMLElement {
-  const a = t('span', 'bb-avatar', b.avatar || b.name.slice(0, 1));
+function avatar(b: { avatar: string; color: string; name: string }, size: 'sm' | 'md' | 'lg' = 'md'): HTMLElement {
+  const a = t('span', `bb-avatar ${size}`, b.avatar || b.name.slice(0, 1));
   if (/^#[0-9a-fA-F]{6}$/.test(b.color)) a.style.background = b.color;
   return a;
 }
 
 export function openBlBots(editor: EditorArea): void {
   editor.openCustomTab('blbots', 'BlBots', (host) => render(host));
+}
+
+function when(ms?: number): string {
+  if (!ms) return '';
+  const d = new Date(ms);
+  const now = new Date();
+  if (d.toDateString() === now.toDateString()) return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  const days = Math.floor((now.getTime() - d.getTime()) / 86_400_000);
+  return days < 7 ? d.toLocaleDateString([], { weekday: 'short' }) : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
 }
 
 function render(host: HTMLElement): void {
@@ -50,42 +59,70 @@ function render(host: HTMLElement): void {
     drawSide();
   }
 
+  let search = '';
   function drawSide(): void {
+    const focused = document.activeElement?.classList.contains('bb-search');
     side.textContent = '';
     const head = el('div', 'bb-side-head');
-    head.append(t('div', 'bb-title', 'BlBots'));
-    const nb = t('button', 'primary', 'New bot') as HTMLButtonElement;
+    head.appendChild(t('div', 'bb-brand', 'BlBots'));
+    const nb = t('button', 'bb-round', '+') as HTMLButtonElement;
+    nb.title = 'New bot';
     nb.addEventListener('click', () => editBot(null));
     head.appendChild(nb);
     side.appendChild(head);
-    if (!data.bots.length) side.appendChild(t('div', 'bb-empty', 'No bots yet. A bot is an AI with its own name, personality, model, folder and memory. Create one to start.'));
-    for (const b of data.bots.filter((x) => !x.hidden)) {
+    const sbox = el('input', 'bb-search') as HTMLInputElement;
+    sbox.placeholder = 'Search';
+    sbox.value = search;
+    sbox.addEventListener('input', () => { search = sbox.value; drawSide(); });
+    side.appendChild(sbox);
+    if (focused) { sbox.focus(); sbox.setSelectionRange(search.length, search.length); }
+    const q = search.trim().toLowerCase();
+    const list = el('div', 'bb-list');
+    side.appendChild(list);
+    const bots = data.bots.filter((x) => !x.hidden && (!q || x.name.toLowerCase().includes(q) || x.title.toLowerCase().includes(q)));
+    if (!data.bots.length) {
+      const e = el('div', 'bb-side-empty');
+      e.append(t('div', 'bb-side-empty-title', 'No bots yet'), t('div', '', 'A bot is an AI with its own name, personality, model, folder and memory.'));
+      const b = t('button', 'primary', 'Create your first bot');
+      b.addEventListener('click', () => editBot(null));
+      e.appendChild(b);
+      list.appendChild(e);
+    }
+    for (const b of bots) {
       const row = el('button', 'bb-item');
       if (target?.kind === 'bot' && target.id === b.id) row.classList.add('active');
       const txt = el('span', 'bb-item-text');
-      txt.append(t('span', 'bb-item-name', (b.pinned ? '📌 ' : '') + b.name), t('span', 'bb-item-sub', b.title || engineLabel(b)));
+      const top = el('span', 'bb-item-top');
+      top.append(t('span', 'bb-item-name', (b.pinned ? '📌 ' : '') + b.name), t('span', 'bb-item-time', when(b.lastAt)));
+      txt.append(top, t('span', 'bb-item-sub', b.lastTitle || b.title || engineLabel(b)));
       row.append(avatar(b), txt);
-      row.addEventListener('click', () => openBot(b.id, null));
+      row.addEventListener('click', () => void openBot(b.id, null));
       row.addEventListener('contextmenu', (e) => { e.preventDefault(); botMenu(b, e.clientX, e.clientY); });
-      side.appendChild(row);
+      list.appendChild(row);
     }
-    const rh = el('div', 'bb-side-head bb-rooms-head');
-    rh.append(t('div', 'bb-title', 'Rooms'));
-    const nr = t('button', '', 'New room') as HTMLButtonElement;
-    nr.disabled = data.bots.length === 0;
-    nr.addEventListener('click', () => editRoom(null));
-    rh.appendChild(nr);
-    side.appendChild(rh);
-    if (!data.rooms.length) side.appendChild(t('div', 'bb-empty', 'A room is one chat with several bots: @mention one, or let the lead hand out the work.'));
-    for (const r of data.rooms) {
+    const rooms = data.rooms.filter((r) => !q || r.name.toLowerCase().includes(q));
+    if (data.bots.length) {
+      const rh = el('div', 'bb-section');
+      rh.appendChild(t('span', '', 'Rooms'));
+      const nr = t('button', 'bb-round sm', '+') as HTMLButtonElement;
+      nr.title = 'New room';
+      nr.addEventListener('click', () => editRoom(null));
+      rh.appendChild(nr);
+      list.appendChild(rh);
+      if (!data.rooms.length) list.appendChild(t('div', 'bb-hint', 'Put several bots in one chat: @mention one, or let the lead hand out the work.'));
+    }
+    for (const r of rooms) {
       const row = el('button', 'bb-item');
       if (target?.kind === 'room' && target.id === r.id) row.classList.add('active');
       const txt = el('span', 'bb-item-text');
-      txt.append(t('span', 'bb-item-name', '# ' + r.name), t('span', 'bb-item-sub', `${r.members.length} bots`));
-      row.appendChild(txt);
+      const top = el('span', 'bb-item-top');
+      top.append(t('span', 'bb-item-name', r.name), t('span', 'bb-item-time', when(r.updated * 1000)));
+      const names = r.members.map((m) => data.bots.find((b) => b.id === m)?.name).filter(Boolean).join(', ');
+      txt.append(top, t('span', 'bb-item-sub', names));
+      row.append(t('span', 'bb-avatar md room', '#'), txt);
       row.addEventListener('click', () => void openRoom(r.id));
       row.addEventListener('contextmenu', (e) => { e.preventDefault(); roomMenu(r.id, e.clientX, e.clientY); });
-      side.appendChild(row);
+      list.appendChild(row);
     }
   }
 
@@ -128,24 +165,32 @@ function render(host: HTMLElement): void {
   }
 
   // ---------- conversation view ----------
-  function frame(title: string, sub: string, actions: HTMLElement[]): HTMLElement {
+  function frame(title: string, sub: string, actions: HTMLElement[], who?: HTMLElement): HTMLElement {
     main.textContent = '';
     const head = el('div', 'bb-head');
+    if (who) head.appendChild(who);
     const h = el('div', 'bb-head-text');
     h.append(t('div', 'bb-head-title', title), t('div', 'bb-head-sub', sub));
     head.appendChild(h);
-    for (const a of actions) head.appendChild(a);
+    const acts = el('div', 'bb-head-actions');
+    for (const a of actions) acts.appendChild(a);
+    head.appendChild(acts);
     msgs = el('div', 'bb-msgs');
     const comp = el('div', 'bb-composer');
+    const pill = el('div', 'bb-pill');
     const ta = el('textarea') as HTMLTextAreaElement;
-    ta.rows = 2;
-    ta.placeholder = target?.kind === 'room' ? 'Message the room (@Name to address a bot)' : 'Message';
-    sendBtn = t('button', 'primary', 'Send') as HTMLButtonElement;
+    ta.rows = 1;
+    ta.placeholder = target?.kind === 'room' ? 'Message the room · @Name to address a bot' : `Message ${title}`;
+    ta.addEventListener('input', () => { ta.style.height = 'auto'; ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`; });
+    sendBtn = t('button', 'bb-send', '↑') as HTMLButtonElement;
+    sendBtn.title = 'Send (Enter)';
     const send = (): void => {
       if (runId) { void window.void.botsCancel(runId); return; }
       const text = ta.value.trim();
       if (!text || !target) return;
       ta.value = '';
+      ta.style.height = 'auto';
+      main.querySelector('.bb-welcome')?.remove();
       addMsg({ role: 'user', text });
       const p = target.kind === 'bot' ? window.void.botsSend(target.id, target.thread, text) : window.void.roomsSend(target.id, text);
       void p.then((r) => {
@@ -157,13 +202,15 @@ function render(host: HTMLElement): void {
     };
     sendBtn.addEventListener('click', send);
     ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
-    comp.append(ta, sendBtn);
+    pill.append(ta, sendBtn);
+    comp.appendChild(pill);
     main.append(head, msgs, comp);
+    setTimeout(() => ta.focus(), 0);
     return msgs;
   }
 
   function setWorking(on: boolean): void {
-    if (sendBtn) sendBtn.textContent = on ? 'Stop' : 'Send';
+    if (sendBtn) { sendBtn.textContent = on ? '■' : '↑'; sendBtn.title = on ? 'Stop' : 'Send (Enter)'; }
     main.classList.toggle('bb-working', on);
   }
 
@@ -171,11 +218,17 @@ function render(host: HTMLElement): void {
 
   function addMsg(m: { role: string; text: string; tools?: string[]; author?: string }): void {
     if (!msgs) return;
-    const d = el('div', `bb-msg ${m.role}`);
-    if (m.author) d.appendChild(t('div', 'bb-author', m.author));
-    if (m.text?.trim()) d.appendChild(t('div', 'bb-text', m.text));
-    msgs.appendChild(d);
-    for (const tool of m.tools ?? []) msgs.appendChild(t('div', 'bb-tool', `● ${tool}`));
+    const row = el('div', `bb-row ${m.role}`);
+    if (m.role !== 'user' && target?.kind === 'room' && m.author) {
+      const b = data.bots.find((x) => x.name === m.author);
+      row.appendChild(b ? avatar(b, 'sm') : t('span', 'bb-avatar sm', m.author.slice(0, 1)));
+    }
+    const col = el('div', 'bb-col');
+    if (m.author && m.role !== 'user') col.appendChild(t('div', 'bb-author', m.author));
+    for (const tool of m.tools ?? []) col.appendChild(t('div', 'bb-tool', tool));
+    if (m.text?.trim()) col.appendChild(t('div', 'bb-bubble', m.text));
+    row.appendChild(col);
+    msgs.appendChild(row);
     scrollDown();
   }
 
@@ -236,11 +289,13 @@ function render(host: HTMLElement): void {
       sel.appendChild(o);
     }
     sel.addEventListener('change', () => void openBot(id, sel.value || null));
-    const edit = t('button', '', 'Edit') as HTMLButtonElement;
+    sel.classList.add('bb-chip');
+    const edit = t('button', 'bb-chip', 'Edit') as HTMLButtonElement;
     edit.addEventListener('click', () => editBot(b));
-    const actions: HTMLElement[] = [sel, edit];
+    const model = t('span', 'bb-chip static', b.engine.kind === 'blaze' ? (b.model || 'Default model') : engineLabel(b));
+    const actions: HTMLElement[] = [model, sel, edit];
     if (b.computer) {
-      const comp = t('button', '', 'Computer') as HTMLButtonElement;
+      const comp = t('button', 'bb-chip', 'Computer') as HTMLButtonElement;
       comp.addEventListener('click', () => {
         comp.disabled = true;
         comp.textContent = 'Starting…';
@@ -248,7 +303,7 @@ function render(host: HTMLElement): void {
       });
       actions.push(comp);
     }
-    frame(b.name, `${b.title ? b.title + ' · ' : ''}${engineLabel(b)} · ${b.approval === 'full' ? 'Full access' : b.approval === 'edits' ? 'Approve edits' : 'Asks first'}`, actions);
+    frame(b.name, `${b.title ? b.title + ' · ' : ''}${b.approval === 'full' ? 'Full access' : b.approval === 'edits' ? 'Approves edits' : 'Asks first'}`, actions, avatar(b, 'sm'));
     if (thread) {
       chatId = thread;
       const th = await window.void.botsThread(id, thread);
@@ -256,7 +311,16 @@ function render(host: HTMLElement): void {
       th.pending.forEach(addCard);
     } else {
       chatId = null;
-      addNote(info.memory.trim() ? `${b.name} remembers:\n${info.memory.trim()}` : `Say hi to ${b.name}.`);
+      const w = el('div', 'bb-welcome');
+      w.append(avatar(b, 'lg'), t('div', 'bb-welcome-name', b.name), t('div', 'bb-welcome-sub', b.title || engineLabel(b)));
+      const mem = info.memory.split('\n').map((x) => x.replace(/^[-*]\s*/, '').trim()).filter(Boolean).slice(-6);
+      if (mem.length) {
+        const chips = el('div', 'bb-mem');
+        chips.appendChild(t('div', 'bb-mem-title', 'Remembers'));
+        for (const m of mem) chips.appendChild(t('span', 'bb-mem-chip', m));
+        w.appendChild(chips);
+      }
+      msgs?.appendChild(w);
     }
   }
 
@@ -269,9 +333,9 @@ function render(host: HTMLElement): void {
     chatId = `room:${id}`;
     const room = data.rooms.find((x) => x.id === id);
     const names = (room?.members ?? []).map((m) => data.bots.find((b) => b.id === m)?.name ?? '?');
-    const edit = t('button', '', 'Edit') as HTMLButtonElement;
+    const edit = t('button', 'bb-chip', 'Edit') as HTMLButtonElement;
     edit.addEventListener('click', () => room && editRoom(room));
-    frame(`# ${r.name}`, names.join(', '), [edit]);
+    frame(r.name, names.join(', '), [edit], t('span', 'bb-avatar sm room', '#'));
     r.messages.forEach(addMsg);
     r.pending.forEach(addCard);
     if (!r.messages.length) addNote('Write to the room. @Name addresses a bot; otherwise the lead answers and may hand work to the others.');
@@ -301,26 +365,29 @@ function render(host: HTMLElement): void {
     if (ev.type === 'text') {
       if (liveEl && target?.kind === 'room' && liveBot !== e.bot) liveEl = null;
       if (!liveEl && msgs) {
-        liveEl = el('div', 'bb-msg assistant');
-        if (target?.kind === 'room') liveEl.appendChild(t('div', 'bb-author', data.bots.find((b) => b.id === e.bot)?.name ?? 'bot'));
-        const body = t('div', 'bb-text', '');
-        liveEl.appendChild(body);
+        liveEl = el('div', 'bb-row assistant');
+        const who = data.bots.find((b) => b.id === e.bot);
+        if (target?.kind === 'room' && who) liveEl.appendChild(avatar(who, 'sm'));
+        const col = el('div', 'bb-col');
+        if (target?.kind === 'room') col.appendChild(t('div', 'bb-author', who?.name ?? 'bot'));
+        col.appendChild(t('div', 'bb-bubble', ''));
+        liveEl.appendChild(col);
         msgs.appendChild(liveEl);
         liveText = '';
         liveBot = e.bot;
       }
       liveText += ev.text;
-      const body = liveEl?.querySelector('.bb-text');
+      const body = liveEl?.querySelector('.bb-bubble');
       if (body) body.textContent = liveText;
       scrollDown();
     } else if (ev.type === 'tool_start') {
       liveEl = null;
-      msgs?.appendChild(t('div', 'bb-tool run', `● ${ev.summary}`));
+      msgs?.appendChild(t('div', 'bb-tool run', ev.summary));
       scrollDown();
     } else if (ev.type === 'tool_end' && ev.is_error) {
       addNote(`✗ ${String(ev.result).split('\n')[0].slice(0, 200)}`, true);
     } else if (ev.type === 'file_changed') {
-      msgs?.appendChild(t('div', 'bb-tool', `${ev.created ? 'new' : 'edit'} ${ev.rel}`));
+      msgs?.appendChild(t('div', 'bb-tool', `${ev.created ? 'Created' : 'Edited'} ${ev.rel}`));
     } else if (ev.type === 'error') {
       addNote(ev.message, true);
     } else if (ev.type === 'notice') {
@@ -352,15 +419,20 @@ function render(host: HTMLElement): void {
     const row = el('div', 'bb-card-row');
     const cancel = t('button', '', 'Cancel');
     const save = t('button', 'primary', 'Save') as HTMLButtonElement;
-    cancel.addEventListener('click', () => ov.remove());
+    const close = (): void => { ov.remove(); document.removeEventListener('keydown', onKey, true); };
+    const onKey = (e: KeyboardEvent): void => { if (e.key === 'Escape') close(); };
+    cancel.addEventListener('click', close);
     save.addEventListener('click', () => {
       save.disabled = true;
       err.textContent = '';
-      void onSave().then(() => ov.remove()).catch((e: unknown) => { err.textContent = String(e instanceof Error ? e.message : e); }).finally(() => { save.disabled = false; });
+      void onSave().then(close).catch((e: unknown) => { err.textContent = String(e instanceof Error ? e.message : e); }).finally(() => { save.disabled = false; });
     });
     row.append(cancel, save);
     box.append(t('div', 'bb-head-title', title), body, err, row);
     ov.appendChild(box);
+    // Esc or a click outside the dialog closes it.
+    document.addEventListener('keydown', onKey, true);
+    ov.addEventListener('mousedown', (e) => { if (e.target === ov) close(); });
     document.body.appendChild(ov);
   }
 

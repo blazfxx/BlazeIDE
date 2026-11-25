@@ -118,7 +118,22 @@ pub fn bots_list(app: AppHandle) -> Value {
     let c = ctx(&app);
     let rooms: Vec<Value> = c.rooms.list().iter().map(|r| json!({ "id": r.id, "name": r.name, "members": r.members, "lead": r.lead, "instructions": r.instructions, "folder": r.folder, "updated": r.updated })).collect();
     let engines: Vec<Value> = bots::engines::available().into_iter().map(|(n, p)| json!({ "name": n, "path": p })).collect();
-    json!({ "bots": c.bots.list(), "rooms": rooms, "engines": engines })
+    // Each bot with its latest chat (title + time) for the list previews.
+    let bots: Vec<Value> = c
+        .bots
+        .list()
+        .into_iter()
+        .map(|b| {
+            let last = blaze_core::chats::list_in(&c.bots.threads_dir(&b.id)).into_iter().next();
+            let mut v = serde_json::to_value(&b).unwrap_or(Value::Null);
+            if let (Some(o), Some(l)) = (v.as_object_mut(), last) {
+                o.insert("lastTitle".into(), json!(l.title));
+                o.insert("lastAt".into(), json!(l.updated_at));
+            }
+            v
+        })
+        .collect();
+    json!({ "bots": bots, "rooms": rooms, "engines": engines })
 }
 
 #[tauri::command]

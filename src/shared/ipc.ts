@@ -135,6 +135,8 @@ export interface VoidAPI {
   cliStatus(): Promise<{ available: boolean; installed: boolean; path: string }>;
   /** Put `blaze` on the PATH (macOS may ask for an administrator password). */
   cliInstall(): Promise<string>;
+  /** Discord status: "Working on <what> - BlazeCLI - blazeapi.org". */
+  presenceSet(what: string): Promise<void>;
   // Continue on mobile
   mobileStatus(): Promise<MobileStatus>;
   mobileSetPassword(password: string): Promise<MobileStatus>;
@@ -212,6 +214,8 @@ export interface BotProfile {
   model: string; approval: 'ask' | 'edits' | 'full'; folder: string; mode: string;
   routines: BotRoutine[]; checkBacks: Array<{ id: string; at: number; thread: string; note: string }>;
   pinned: boolean; hidden: boolean; created: number; computer: boolean;
+  /** Latest chat, for list previews (filled by botsList). */
+  lastTitle?: string; lastAt?: number;
 }
 export interface BotsOverview {
   bots: BotProfile[];

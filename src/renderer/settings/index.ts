@@ -12,6 +12,7 @@ import { buildExtensionsSection } from './extensions';
 import { buildProvidersSection } from './providers';
 import { buildCliSection } from './cli';
 import { buildMobileSection } from './mobile';
+import { currentWork } from '../presence';
 import { routingChoices, setRouting } from '../ai-panel/routing';
 import type { AIRouting } from '../../shared/types';
 import {
@@ -159,6 +160,11 @@ function buildPrivacySection(): HTMLElement[] {
       'Share anonymous usage',
       'Off by default. When on, Blaze IDE sends a random install id, the app version, your platform and event names (app opened, signed in, AI request with the BlazeAPI model id, updated). Never your files, prompts, paths or custom providers.',
       toggle(s.analytics, (v) => void apply({ analytics: v }))
+    ),
+    settingRow(
+      'Discord status',
+      'Shows "Working on <file> - BlazeCLI - blazeapi.org" on your Discord profile while Blaze IDE is open (Discord desktop app only). Your Discord friends can see the file and project names.',
+      toggle(s.discordStatus, (v) => void apply({ discordStatus: v }).then(() => window.void.presenceSet(currentWork())))
     ),
   ];
 }

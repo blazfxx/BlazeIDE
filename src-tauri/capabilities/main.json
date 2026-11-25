@@ -66,6 +66,7 @@
     "allow-pick-media",
     "allow-cli-status",
     "allow-cli-install",
+    "allow-presence-set",
     "allow-bots-list",
     "allow-bots-save",
     "allow-bots-delete",

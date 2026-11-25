@@ -8,6 +8,7 @@ mod commands;
 mod media;
 mod menu;
 mod mobile;
+mod presence;
 mod secrets;
 mod windows;
 
@@ -134,6 +135,7 @@ pub fn run() {
             tauri::async_runtime::spawn(async move { mobile::apply(&h2).await });
             // BlBots routines and check-backs run while the app is open.
             blbots::start_scheduler(&handle);
+            presence::sync(&handle);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -190,6 +192,7 @@ pub fn run() {
             commands::open_external,
             commands::pick_media,
             commands::cli_status,
+            presence::presence_set,
             blbots::bots_list,
             blbots::bots_save,
             blbots::bots_delete,

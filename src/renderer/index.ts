@@ -16,6 +16,7 @@ import { showOnboarding } from './onboarding/index';
 import { applyAppearance } from './appearance';
 import { applyAmbient } from './ambientAudio';
 import { openSettingsTab } from './settings/index';
+import { initPresence } from './presence';
 import { initPalette, openCommandPalette } from './palette/index';
 import { initPreview } from './preview/index';
 import { matchAction } from './keybindings';
@@ -184,6 +185,7 @@ async function boot(): Promise<void> {
   initPreview(editor);
 
   bus.on('open-settings', () => openSettingsTab(editor));
+  initPresence();
   bus.on('open-blbots', () => void import('./blbots/index').then((m) => m.openBlBots(editor)));
   bus.on('session-changed', (s) => {
     if (s === null) window.location.reload();

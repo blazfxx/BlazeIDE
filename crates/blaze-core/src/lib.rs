@@ -17,6 +17,7 @@ pub mod media_store;
 pub mod mediagen;
 pub mod models;
 pub mod paths;
+pub mod presence;
 pub mod prompts;
 pub mod providers;
 pub mod remote;
