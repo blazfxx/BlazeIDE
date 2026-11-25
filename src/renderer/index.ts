@@ -25,6 +25,8 @@ import { showForceUpdate } from './forceUpdate';
 import { maybeShowUpdateBanner, showUpdateReady } from './updateBanner';
 import type { VersionInfo } from '../shared/types';
 import './account/index'; // registers the open-account bus listener
+import { initWorkbenchTheme } from './extensions/workbench';
+import { initIconThemes } from './extensions/iconTheme';
 
 async function openFolderFlow(): Promise<void> {
   const root = await window.void.fsOpenFolder();
@@ -193,6 +195,8 @@ async function boot(): Promise<void> {
   });
   // Live theme/background updates from Settings.
   bus.on('settings-changed', (s) => { applyAppearance(s); applyAmbient(s); });
+  initWorkbenchTheme();
+  initIconThemes();
   window.void.onMenu((action) => dispatch(action, editor));
   bindKeys(editor);
 

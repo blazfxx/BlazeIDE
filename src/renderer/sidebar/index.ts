@@ -51,6 +51,7 @@ export function initSidebar(host: HTMLElement): void {
     onRename: (node) => void renameEntry(node),
     onDelete: (node) => void deleteEntry(node),
   });
+  bus.on('icon-theme-changed', () => tree.render());
 
   let searchTimer: number | null = null;
 

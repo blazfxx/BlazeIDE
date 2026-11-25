@@ -230,6 +230,10 @@ export interface AppSettings {
   discordStatus: boolean;
   /** Editor colour theme from an installed extension (`ext:<id>/<label>`); '' = the app theme. */
   editorTheme: string;
+  /** File icon theme from an extension, "<extId>/<themeId>"; "" = Blaze's own icons. */
+  iconTheme: string;
+  /** Let an extension colour theme recolour the whole window, not just the editor. */
+  themeWorkbench: boolean;
   selectedModel: string;
   aiMode: AIMode;
   confirmDelete: boolean;
@@ -341,6 +345,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   analytics: false,
   discordStatus: true,
   editorTheme: '',
+  iconTheme: '',
+  themeWorkbench: true,
   selectedModel: 'claude-sonnet-5',
   aiMode: 'ask',
   confirmDelete: true,
@@ -421,7 +427,17 @@ export interface ExtDetails {
   images: Record<string, string>;
   themes: string[];
   snippets: string[];
+  iconThemes: string[];
   unsupported: string[];
+}
+
+/** A file icon theme: VS Code's mappings plus each icon as a data: URL. */
+export interface IconThemeData {
+  extId: string;
+  id: string;
+  label: string;
+  map: Record<string, unknown>;
+  icons: Record<string, string>;
 }
 
 export interface InstalledExt {
@@ -431,6 +447,8 @@ export interface InstalledExt {
   version: string;
   themes: Array<{ label: string; base: string; path: string }>;
   snippets: Array<{ language: string; path: string }>;
+  /** File icon themes (older installs: missing). */
+  iconThemes?: Array<{ id: string; label: string; path: string }>;
   /** Parts of the extension that cannot run here (its own code, grammars, commands…). */
   unsupported: string[];
   /** The extension's own icon (data: URL), when it has one. */

@@ -1000,6 +1000,11 @@ pub fn ext_list(state: State<'_, AppState>) -> Vec<extensions::Installed> {
 }
 
 #[tauri::command]
+pub fn ext_icon_theme(state: State<'_, AppState>, ext_id: String, theme_id: String) -> CmdResult<extensions::IconThemeData> {
+    extensions::icon_theme(&state.ext_dir, &ext_id, &theme_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub fn ext_contributions(state: State<'_, AppState>) -> extensions::Contributions {
     extensions::contributions(&state.ext_dir)
 }

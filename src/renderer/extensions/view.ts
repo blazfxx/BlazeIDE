@@ -121,12 +121,13 @@ export function buildExtensionsView(host: HTMLElement): void {
 
   function installedRow(e: InstalledExt): HTMLElement {
     const { namespace, name } = splitId(e.id);
-    const using = e.themes.some((t) => themeKey(e.id, t.label) === state.settings.editorTheme);
+    const usingIcons = state.settings.iconTheme.startsWith(`${e.id}/`);
+    const using = usingIcons || e.themes.some((t) => themeKey(e.id, t.label) === state.settings.editorTheme);
     return row({
       id: e.id, namespace, name, display: e.displayName, description: e.description, iconUrl: e.icon,
       publisher: namespace, verified: false, version: e.version,
-      note: using ? 'Colour theme in use' : e.themes.length + e.snippets.length === 0 ? summary(e) : undefined,
-      warn: !using && e.themes.length + e.snippets.length === 0,
+      note: usingIcons ? 'File icon theme in use' : using ? 'Colour theme in use' : e.themes.length + e.snippets.length + (e.iconThemes?.length ?? 0) === 0 ? summary(e) : undefined,
+      warn: !using && e.themes.length + e.snippets.length + (e.iconThemes?.length ?? 0) === 0,
     });
   }
 

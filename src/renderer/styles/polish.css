@@ -339,3 +339,10 @@ select.bb-chip { padding: 0 28px 0 14px; }
 .md th, .md td { border: 1px solid var(--border); padding: 6px 12px; }
 .md th { background: var(--bg-elevated); }
 .md-html { margin: 0 0 .9em; }
+
+/* The chat box draws the border; its textarea must not add a second one on
+   hover/focus (the generic input rules above would). */
+.ai-input-field .ai-textarea, .ai-input-field .ai-textarea:hover, .ai-input-field .ai-textarea:focus { border: none; box-shadow: none; outline: none; background: transparent; }
+
+/* File icon themes from extensions: pictures instead of Blaze's line icons. */
+.tree-icon img.ti { width: 16px; height: 16px; display: block; }

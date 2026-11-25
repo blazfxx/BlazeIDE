@@ -10,7 +10,7 @@ const COMMANDS: &[&str] = &[
     "term_create", "term_write", "term_resize", "term_kill",
     "ai_send", "ai_cancel", "ai_get_models", "ai_refresh_models", "ai_run_tool", "ai_generate_media", "ai_image_suppliers", "ai_complete",
     "providers_list", "providers_save", "providers_delete", "providers_fetch_models",
-    "ext_search", "ext_details", "ext_install", "ext_uninstall", "ext_list", "ext_contributions",
+    "ext_search", "ext_details", "ext_icon_theme", "ext_install", "ext_uninstall", "ext_list", "ext_contributions",
     "chat_list", "chat_load", "chat_save", "chat_delete",
     "settings_get", "settings_set",
     "open_external", "pick_media",

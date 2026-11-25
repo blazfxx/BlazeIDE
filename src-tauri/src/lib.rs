@@ -180,6 +180,7 @@ pub fn run() {
             commands::providers_fetch_models,
             commands::ext_search,
             commands::ext_details,
+            commands::ext_icon_theme,
             commands::ext_install,
             commands::ext_uninstall,
             commands::ext_list,

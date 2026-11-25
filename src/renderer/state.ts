@@ -23,6 +23,8 @@ export interface BusEvents {
   'models-changed': ModelEntry[];
   /** An extension was installed or removed: reload themes and snippets. */
   'extensions-changed': void;
+  /** The file icon theme was switched or reloaded: redraw file icons. */
+  'icon-theme-changed': void;
   /** The model list could not be loaded (message to show in the picker). */
   'models-error': string;
   'ai-insert-at-cursor': { text: string };

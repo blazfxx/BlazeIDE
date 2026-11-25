@@ -155,7 +155,15 @@ const FOLDER_KINDS: Array<[RegExp, FileIconSpec]> = [
 
 const DEFAULT_FOLDER: FileIconSpec = { svg: iconFolder, cls: 'fi-folder' };
 
+import { themedIcon } from '../extensions/iconTheme';
+
 export function fileIcon(name: string): FileIconSpec {
+  const themed = themedIcon(name, false);
+  if (themed) return { svg: themed, cls: 'fi-theme' };
+  return builtinFileIcon(name);
+}
+
+function builtinFileIcon(name: string): FileIconSpec {
   const lower = name.toLowerCase();
   for (const [pattern, spec] of NAME_ICONS) {
     if (pattern.test(lower)) return spec;
@@ -165,6 +173,8 @@ export function fileIcon(name: string): FileIconSpec {
 }
 
 export function folderIcon(name: string, open: boolean): FileIconSpec {
+  const themed = themedIcon(name, true, open);
+  if (themed) return { svg: themed, cls: 'fi-theme' };
   const kind = FOLDER_KINDS.find(([pattern]) => pattern.test(name.toLowerCase()));
   const cls = kind ? kind[1].cls : DEFAULT_FOLDER.cls;
   if (open) return { svg: iconFolderOpen, cls };
@@ -173,5 +183,5 @@ export function folderIcon(name: string, open: boolean): FileIconSpec {
 
 /** Color class only — used for the small type dot on editor tabs. */
 export function fileColorClass(name: string): string {
-  return fileIcon(name).cls;
+  return builtinFileIcon(name).cls;
 }

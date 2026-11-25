@@ -27,6 +27,10 @@ const REGISTRY: &str = "https://open-vsx.org";
 const MAX_VSIX: u64 = 60 * 1024 * 1024;
 const MAX_FILE: u64 = 4 * 1024 * 1024;
 const MAX_FILES: usize = 400;
+/// Icon packs ship many small pictures (Material Icon Theme: ~1,300 SVGs).
+const MAX_ICON_FILES: usize = 6000;
+const MAX_ICON_FILE: u64 = 256 * 1024;
+const MAX_ICON_BYTES: u64 = 40 * 1024 * 1024;
 const MANIFEST: &str = "blaze-ext.json";
 const CATEGORIES: &[&str] = &["Themes", "Snippets"];
 
@@ -53,6 +57,15 @@ pub struct ThemeRef {
     pub path: String,
 }
 
+/// A file icon theme (`contributes.iconThemes`): only picture-based ones
+/// (iconPath to .svg/.png); font-glyph icon themes are not supported.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct IconThemeRef {
+    pub id: String,
+    pub label: String,
+    pub path: String,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct FileRef {
     pub language: String,
@@ -68,6 +81,8 @@ pub struct Installed {
     pub version: String,
     pub themes: Vec<ThemeRef>,
     pub snippets: Vec<FileRef>,
+    #[serde(default)]
+    pub icon_themes: Vec<IconThemeRef>,
     /// Parts of the extension we cannot run (grammars, commands, its own code…).
     pub unsupported: Vec<String>,
     /// The extension's own icon as a data: URL (from its package; up to
@@ -80,7 +95,7 @@ pub struct Installed {
 
 impl Installed {
     pub fn supported_parts(&self) -> usize {
-        self.themes.len() + self.snippets.len()
+        self.themes.len() + self.snippets.len() + self.icon_themes.len()
     }
 }
 
@@ -398,6 +413,7 @@ pub struct Details {
     /// What the extension contributes, from its package.json.
     pub themes: Vec<String>,
     pub snippets: Vec<String>,
+    pub icon_themes: Vec<String>,
     /// Contribution kinds Blaze IDE cannot run (commands, languages, ...).
     pub unsupported: Vec<String>,
 }
@@ -513,7 +529,7 @@ fn resolve_image(raw: &str, base: Option<&str>) -> Option<String> {
     base.map(|b| format!("{b}{}", raw.trim_start_matches("./").trim_start_matches('/')))
 }
 
-fn contributes_summary(manifest: &Value) -> (Vec<String>, Vec<String>, Vec<String>) {
+fn contributes_summary(manifest: &Value) -> (Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
     let c = manifest.get("contributes");
     let list = |k: &str, f: &str| -> Vec<String> {
         c.and_then(|c| c.get(k)).and_then(Value::as_array).map(|a| a.iter().filter_map(|x| x.get(f).and_then(Value::as_str).map(str::to_string)).collect()).unwrap_or_default()
@@ -521,14 +537,16 @@ fn contributes_summary(manifest: &Value) -> (Vec<String>, Vec<String>, Vec<Strin
     let themes = list("themes", "label");
     let mut snippets = list("snippets", "language");
     snippets.dedup();
+    let icon_themes = list("iconThemes", "label").into_iter().filter(|l| !l.starts_with('%')).collect::<Vec<_>>();
+    let icon_themes = if icon_themes.is_empty() { list("iconThemes", "id") } else { icon_themes };
     let mut other: Vec<String> = c
         .and_then(Value::as_object)
-        .map(|o| o.keys().filter(|k| *k != "themes" && *k != "snippets").map(|k| k.to_string()).collect())
+        .map(|o| o.keys().filter(|k| *k != "themes" && *k != "snippets" && *k != "iconThemes").map(|k| k.to_string()).collect())
         .unwrap_or_default();
     if manifest.get("main").is_some() || manifest.get("browser").is_some() {
         other.insert(0, "its own code".into());
     }
-    (themes, snippets, other)
+    (themes, snippets, icon_themes, other)
 }
 
 /// Everything the extension details page shows: registry facts, publisher,
@@ -584,7 +602,7 @@ pub async fn details(http: &reqwest::Client, namespace: &str, name: &str) -> Res
     let fetched = futures_util::future::join_all(wanted.iter().map(|(_, u)| get_image(http, u))).await;
     let images = wanted.into_iter().zip(fetched).filter_map(|((k, _), v)| v.map(|v| (k, v))).collect();
 
-    let (themes, snippets, unsupported) = manifest.as_ref().map(contributes_summary).unwrap_or_default();
+    let (themes, snippets, icon_themes, unsupported) = manifest.as_ref().map(contributes_summary).unwrap_or_default();
     let ns_display = s("namespaceDisplayName");
     Ok(Details {
         id: format!("{namespace}.{name}"),
@@ -623,6 +641,7 @@ pub async fn details(http: &reqwest::Client, namespace: &str, name: &str) -> Res
         images,
         themes,
         snippets,
+        icon_themes,
         unsupported,
     })
 }
@@ -679,6 +698,44 @@ pub fn install_vsix(bytes: &[u8], root: &Path, id: &str) -> Result<Installed> {
         }
     }
 
+    // Icon themes: the theme JSON plus every picture its iconDefinitions use.
+    let mut icon_themes = Vec::new();
+    let mut icon_files: Vec<String> = Vec::new();
+    let mut font_icons = false;
+    for it in contributes.get("iconThemes").and_then(Value::as_array).into_iter().flatten() {
+        let path = clean_rel(&text(it, "path"))?;
+        let Ok(raw) = read_entry(&mut zip, &format!("extension/{path}")) else { continue };
+        let Ok(json) = parse_jsonc(&String::from_utf8_lossy(&raw)) else { continue };
+        let parent = Path::new(&path).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+        let mut pictures = 0;
+        for def in json.get("iconDefinitions").and_then(Value::as_object).into_iter().flat_map(|o| o.values()) {
+            let Some(ip) = def.get("iconPath").and_then(Value::as_str) else {
+                if def.get("fontCharacter").is_some() {
+                    font_icons = true;
+                }
+                continue;
+            };
+            let joined = if parent.is_empty() { ip.to_string() } else { format!("{parent}/{ip}") };
+            let Ok(rel) = clean_rel(&normalize(&joined)) else { continue };
+            let lower = rel.to_ascii_lowercase();
+            if lower.ends_with(".svg") || lower.ends_with(".png") {
+                icon_files.push(rel);
+                pictures += 1;
+            }
+        }
+        if pictures > 0 {
+            let id_ = if text(it, "id").is_empty() { path.clone() } else { text(it, "id") };
+            let label = if text(it, "label").is_empty() || text(it, "label").starts_with('%') { id_.clone() } else { text(it, "label") };
+            icon_themes.push(IconThemeRef { id: id_, label, path: path.clone() });
+            want.push(path);
+        }
+    }
+    icon_files.sort();
+    icon_files.dedup();
+    if icon_files.len() > MAX_ICON_FILES {
+        return Err(Error::msg("That icon theme has too many pictures"));
+    }
+
     let dir = root.join(format!("{id}-{version}"));
     let tmp = root.join(format!(".{id}-{version}.tmp"));
     let _ = fs::remove_dir_all(&tmp);
@@ -712,6 +769,25 @@ pub fn install_vsix(bytes: &[u8], root: &Path, id: &str) -> Result<Installed> {
             }
             fs::write(target, data)?;
         }
+        // Icon pictures: many small files, each capped; a missing one is skipped.
+        let mut bytes = 0u64;
+        for rel in &icon_files {
+            let Ok(mut f) = zip.by_name(&format!("extension/{rel}")) else { continue };
+            if f.size() > MAX_ICON_FILE {
+                continue;
+            }
+            bytes += f.size();
+            if bytes > MAX_ICON_BYTES {
+                return Err(Error::msg("That icon theme is too large"));
+            }
+            let mut buf = Vec::new();
+            f.by_ref().take(MAX_ICON_FILE + 1).read_to_end(&mut buf)?;
+            let target = tmp.join(rel);
+            if let Some(p) = target.parent() {
+                fs::create_dir_all(p)?;
+            }
+            fs::write(target, buf)?;
+        }
         Ok(())
     })();
     if let Err(e) = result {
@@ -723,10 +799,13 @@ pub fn install_vsix(bytes: &[u8], root: &Path, id: &str) -> Result<Installed> {
     if pkg.get("main").is_some() || pkg.get("browser").is_some() {
         unsupported.push("its own code (needs the VS Code extension host)".to_string());
     }
-    for (key, label) in [("grammars", "syntax grammars"), ("languages", "new languages"), ("commands", "commands"), ("debuggers", "debuggers"), ("iconThemes", "icon themes"), ("keybindings", "keybindings"), ("configuration", "settings")] {
+    for (key, label) in [("grammars", "syntax grammars"), ("languages", "new languages"), ("commands", "commands"), ("debuggers", "debuggers"), ("productIconThemes", "product icon themes"), ("keybindings", "keybindings"), ("configuration", "settings")] {
         if contributes.get(key).map(|v| !v.is_null()).unwrap_or(false) {
             unsupported.push(label.to_string());
         }
+    }
+    if font_icons && icon_themes.is_empty() {
+        unsupported.push("font-based icon themes".to_string());
     }
     let icon = icon_data_url(&mut zip, &text(&pkg, "icon"));
     let display = text(&pkg, "displayName");
@@ -737,6 +816,7 @@ pub fn install_vsix(bytes: &[u8], root: &Path, id: &str) -> Result<Installed> {
         version,
         themes,
         snippets,
+        icon_themes,
         unsupported,
         icon,
         dir: dir.clone(),
@@ -868,6 +948,47 @@ pub fn contributions(root: &Path) -> Contributions {
     c
 }
 
+/// A file icon theme ready for the file tree: its mappings (fileNames,
+/// fileExtensions, folderNames, languageIds, light, ...) and each icon
+/// definition as a data: URL.
+#[derive(Serialize, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct IconThemeData {
+    pub ext_id: String,
+    pub id: String,
+    pub label: String,
+    pub map: Value,
+    pub icons: std::collections::BTreeMap<String, String>,
+}
+
+pub fn icon_theme(root: &Path, ext_id: &str, theme_id: &str) -> Result<IconThemeData> {
+    use base64::Engine;
+    let e = list_installed(root).into_iter().find(|e| e.id == ext_id).ok_or_else(|| Error::msg("That extension is not installed"))?;
+    let t = e.icon_themes.iter().find(|t| t.id == theme_id).ok_or_else(|| Error::msg("That icon theme is not in the extension"))?;
+    let mut map = read_json(&e.dir, &t.path).ok_or_else(|| Error::msg("The icon theme file is missing"))?;
+    let parent = Path::new(&t.path).parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+    let mut icons = std::collections::BTreeMap::new();
+    if let Some(defs) = map.get("iconDefinitions").and_then(Value::as_object) {
+        for (id, def) in defs {
+            let Some(ip) = def.get("iconPath").and_then(Value::as_str) else { continue };
+            let joined = if parent.is_empty() { ip.to_string() } else { format!("{parent}/{ip}") };
+            let Ok(rel) = clean_rel(&normalize(&joined)) else { continue };
+            let Ok(data) = fs::read(e.dir.join(&rel)) else { continue };
+            let url = if rel.to_ascii_lowercase().ends_with(".svg") {
+                format!("data:image/svg+xml;base64,{}", base64::engine::general_purpose::STANDARD.encode(&data))
+            } else {
+                format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(&data))
+            };
+            icons.insert(id.clone(), url);
+        }
+    }
+    if let Some(o) = map.as_object_mut() {
+        o.remove("iconDefinitions");
+        o.remove("fonts");
+    }
+    Ok(IconThemeData { ext_id: e.id.clone(), id: t.id.clone(), label: t.label.clone(), map, icons })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -934,6 +1055,50 @@ mod tests {
     }
 
     #[test]
+    fn icon_themes_are_unpacked_and_loaded() {
+        let pkg = r#"{"version":"2.0.0","contributes":{"iconThemes":[{"id":"pack","label":"Pack Icons","path":"./dist/icons.json"}],"productIconThemes":[{"id":"p"}]}}"#;
+        let theme = r##"{"iconDefinitions":{"js":{"iconPath":"./../icons/js.svg"},"folder":{"iconPath":"./../icons/folder.svg"},"evil":{"iconPath":"./../../../outside.svg"},"glyph":{"fontCharacter":"\\uE001"}},"file":"js","folder":"folder","fileExtensions":{"js":"js"},"light":{"fileExtensions":{"js":"js"}}}"##;
+        let bytes = vsix(&[
+            ("extension/package.json", pkg),
+            ("extension/dist/icons.json", theme),
+            ("extension/icons/js.svg", "<svg xmlns='http://www.w3.org/2000/svg'/>"),
+            ("extension/icons/folder.svg", "<svg/>"),
+            ("extension/icons/unused.svg", "<svg/>"),
+        ]);
+        let root = tempfile::tempdir().unwrap();
+        let info = install_vsix(&bytes, root.path(), "me.icons").unwrap();
+        assert_eq!(info.icon_themes, vec![IconThemeRef { id: "pack".into(), label: "Pack Icons".into(), path: "dist/icons.json".into() }]);
+        assert!(info.unsupported.contains(&"product icon themes".to_string()));
+        assert!(!info.unsupported.iter().any(|u| u == "icon themes"));
+        assert!(root.path().join("me.icons-2.0.0/icons/js.svg").exists());
+        assert!(!root.path().join("me.icons-2.0.0/icons/unused.svg").exists(), "only referenced pictures");
+        let d = icon_theme(root.path(), "me.icons", "pack").unwrap();
+        assert_eq!(d.icons.len(), 2);
+        assert!(d.icons["js"].starts_with("data:image/svg+xml;base64,"));
+        assert_eq!(d.map["fileExtensions"]["js"], "js");
+        assert!(d.map.get("iconDefinitions").is_none());
+        assert!(icon_theme(root.path(), "me.icons", "nope").is_err());
+        // Manifests written before icon themes existed still load.
+        let old = root.path().join("old.ext-1.0.0");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join(MANIFEST), r#"{"id":"old.ext","displayName":"Old","description":"","version":"1.0.0","themes":[],"snippets":[],"unsupported":[]}"#).unwrap();
+        assert!(list_installed(root.path()).iter().any(|e| e.id == "old.ext" && e.icon_themes.is_empty()));
+    }
+
+    /// `MATERIAL_VSIX=/path/PKief.material-icon-theme.vsix cargo test -- --ignored material`
+    #[test]
+    #[ignore]
+    fn material_icon_theme() {
+        let bytes = std::fs::read(std::env::var("MATERIAL_VSIX").unwrap()).unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let info = install_vsix(&bytes, root.path(), "PKief.material-icon-theme").unwrap();
+        let d = icon_theme(root.path(), &info.id, &info.icon_themes[0].id).unwrap();
+        println!("{} icons, unsupported {:?}", d.icons.len(), info.unsupported);
+        assert!(d.icons.len() > 1000);
+        assert!(d.map["fileExtensions"]["ts"].is_string());
+    }
+
+    #[test]
     fn rejects_paths_that_escape() {
         let pkg = r#"{"version":"1.0.0","contributes":{"themes":[{"label":"x","path":"../../evil.json"}]}}"#;
         let bytes = vsix(&[("extension/package.json", pkg)]);
@@ -973,8 +1138,8 @@ mod tests {
         assert_eq!(resolve_image("https://github.com/o/r/blob/main/x.png", None).unwrap(), "https://raw.githubusercontent.com/o/r/main/x.png");
         assert!(resolve_image("http://insecure/x.png", base.as_deref()).is_none());
         assert!(resolve_image("../up.png", base.as_deref()).is_none());
-        let (t, s, o) = contributes_summary(&serde_json::json!({"main":"x.js","contributes":{"themes":[{"label":"Dark"}],"snippets":[{"language":"go"}],"commands":[]}}));
-        assert_eq!((t, s, o), (vec!["Dark".to_string()], vec!["go".to_string()], vec!["its own code".to_string(), "commands".to_string()]));
+        let (t, s, i, o) = contributes_summary(&serde_json::json!({"main":"x.js","contributes":{"themes":[{"label":"Dark"}],"snippets":[{"language":"go"}],"iconThemes":[{"id":"m","label":"Icons"}],"commands":[]}}));
+        assert_eq!((t, s, i, o), (vec!["Dark".to_string()], vec!["go".to_string()], vec!["Icons".to_string()], vec!["its own code".to_string(), "commands".to_string()]));
     }
 
     #[test]

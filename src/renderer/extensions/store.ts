@@ -52,6 +52,8 @@ export function summary(e: InstalledExt): string {
   const parts: string[] = [];
   if (e.themes.length) parts.push(`${e.themes.length} theme${e.themes.length === 1 ? '' : 's'}`);
   if (e.snippets.length) parts.push(`${e.snippets.length} snippet set${e.snippets.length === 1 ? '' : 's'}`);
+  const icons = e.iconThemes?.length ?? 0;
+  if (icons) parts.push(`${icons} file icon theme${icons === 1 ? '' : 's'}`);
   return parts.length ? `Provides ${parts.join(' and ')}` : 'Nothing in this extension can run in Blaze IDE';
 }
 
@@ -74,8 +76,15 @@ export async function uninstallExt(id: string): Promise<void> {
   const e = findInstalled(id);
   await window.void.extUninstall(id);
   if (e && e.themes.some((t) => themeKey(e.id, t.label) === state.settings.editorTheme)) await apply({ editorTheme: '' });
+  if (state.settings.iconTheme.startsWith(`${id}/`)) await apply({ iconTheme: '' });
   bus.emit('extensions-changed', undefined);
   await refreshInstalled();
+}
+
+/** Use one of an installed extension's file icon themes in the file tree. */
+export async function useIconTheme(extId: string, themeId: string): Promise<void> {
+  await apply({ iconTheme: `${extId}/${themeId}` });
+  notify();
 }
 
 /** Use one of an installed extension's colour themes in the editor. */

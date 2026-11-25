@@ -219,9 +219,21 @@ function buildAppearanceSection(): HTMLElement[] {
     const current = options.some((o) => o.value === state.settings.editorTheme) ? state.settings.editorTheme : '';
     themeHost.appendChild(selectInput(options, current, (v) => void apply({ editorTheme: v })));
   };
+  // File icon theme (e.g. Material Icon Theme) from an installed extension.
+  const iconHost = el('div', '');
+  const renderIcons = (list: InstalledExt[]): void => {
+    iconHost.textContent = '';
+    const options = [{ value: '', label: 'Blaze icons' }];
+    for (const e of list) for (const t of e.iconThemes ?? []) options.push({ value: `${e.id}/${t.id}`, label: `${t.label} (${e.displayName})` });
+    const current = options.some((o) => o.value === state.settings.iconTheme) ? state.settings.iconTheme : '';
+    iconHost.appendChild(selectInput(options, current, (v) => void apply({ iconTheme: v })));
+  };
   renderThemes([]);
-  void window.void.extList().then(renderThemes, () => undefined);
+  renderIcons([]);
+  void window.void.extList().then((l) => { renderThemes(l); renderIcons(l); }, () => undefined);
   rows.push(settingRow('Editor colour theme', 'From an extension you installed in the Extensions side bar.', themeHost));
+  rows.push(settingRow('Colour the whole window', 'Let the colour theme recolour the side bar, tabs, panels and buttons too, not just the code.', toggle(s.themeWorkbench !== false, (v) => void apply({ themeWorkbench: v }))));
+  rows.push(settingRow('File icon theme', 'Icons in the file tree, from an icon pack you installed (for example Material Icon Theme).', iconHost));
 
   // Custom background: picked in the native dialog and copied into the app's
   // own media folder (it used to be inlined as a data URL, which the settings

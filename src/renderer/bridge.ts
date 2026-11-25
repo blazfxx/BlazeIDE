@@ -92,6 +92,7 @@ const api: VoidAPI = {
 
   extSearch: (query, category, offset) => invoke('ext_search', { query, category, offset }),
   extDetails: (namespace, name) => invoke('ext_details', { namespace, name }),
+  extIconTheme: (extId, themeId) => invoke('ext_icon_theme', { extId, themeId }),
   extInstall: (namespace, name) => invoke('ext_install', { namespace, name }),
   extUninstall: (id) => invoke('ext_uninstall', { id }),
   extList: () => invoke('ext_list'),

@@ -8,7 +8,7 @@ import type { ExtDetails, MarketItem } from '../../shared/types';
 import { el, escapeHtml, state } from '../state';
 import { themeKey } from './apply';
 import { renderMarkdown } from './markdown';
-import { compact, ensureLoaded, findInstalled, installExt, isBusy, onExtChange, summary, uninstallExt, useTheme } from './store';
+import { compact, ensureLoaded, findInstalled, installExt, isBusy, onExtChange, summary, uninstallExt, useIconTheme, useTheme } from './store';
 
 const cache = new Map<string, Promise<ExtDetails>>();
 
@@ -136,6 +136,13 @@ function render(host: HTMLElement, ref: { namespace: string; name: string; item?
         b.addEventListener('click', () => void useTheme(id, t.label).then(renderActions));
         actions.appendChild(b);
       }
+      for (const t of mine.iconThemes ?? []) {
+        const using = state.settings.iconTheme === `${id}/${t.id}`;
+        const b = el('button', using ? 'xd-btn' : 'xd-btn primary', using ? `✓ ${escapeHtml(t.label)} in use` : `Use ${escapeHtml(t.label)}`) as HTMLButtonElement;
+        b.disabled = using;
+        b.addEventListener('click', () => void useIconTheme(id, t.id).then(renderActions));
+        actions.appendChild(b);
+      }
       const un = el('button', 'xd-btn', 'Uninstall');
       un.addEventListener('click', () => {
         note.textContent = '';
@@ -154,10 +161,10 @@ function render(host: HTMLElement, ref: { namespace: string; name: string; item?
       });
       actions.appendChild(b);
       if (d) {
-        const runs = d.themes.length + d.snippets.length;
+        const runs = d.themes.length + d.snippets.length + d.iconThemes.length;
         note.className = runs ? 'xd-note' : 'xd-note warn';
         note.textContent = runs
-          ? `Works in Blaze IDE: ${[d.themes.length ? `${d.themes.length} colour theme${d.themes.length === 1 ? '' : 's'}` : '', d.snippets.length ? `snippets for ${d.snippets.join(', ')}` : ''].filter(Boolean).join(' and ')}.`
+          ? `Works in Blaze IDE: ${[d.themes.length ? `${d.themes.length} colour theme${d.themes.length === 1 ? '' : 's'}` : '', d.iconThemes.length ? `${d.iconThemes.length} file icon theme${d.iconThemes.length === 1 ? '' : 's'}` : '', d.snippets.length ? `snippets for ${d.snippets.join(', ')}` : ''].filter(Boolean).join(', ')}.`
           : 'Nothing in this extension can run in Blaze IDE (it needs the VS Code extension host).';
       }
     }
@@ -200,9 +207,10 @@ function render(host: HTMLElement, ref: { namespace: string; name: string; item?
         f.appendChild(c);
       };
       card('Colour themes', d.themes, 'ok');
+      card('File icon themes', d.iconThemes, 'ok');
       card('Snippets', d.snippets.map((l) => `Snippets for ${l}`), 'ok');
       card('Not available in Blaze IDE', d.unsupported, 'no');
-      f.appendChild(el('p', 'xd-feat-note', 'Blaze IDE runs the declarative parts of VS Code extensions: colour themes and snippets. Parts that need the extension’s own code (commands, language servers, debuggers, icon themes) are not run.'));
+      f.appendChild(el('p', 'xd-feat-note', 'Blaze IDE runs the declarative parts of VS Code extensions: colour themes (for the editor and the whole window), file icon themes and snippets. Parts that need the extension’s own code (commands, language servers, debuggers) are not run.'));
       main.appendChild(f);
     }
   }
