@@ -38,7 +38,14 @@
     if (s < 86400) return Math.round(s / 3600) + ' h ago';
     return Math.round(s / 86400) + ' d ago';
   }
-  // Minimal markdown: ``` code blocks and `inline code`; everything else as text.
+  // Minimal markdown: ``` code blocks, `inline code`, **bold**, - and 1. lists.
+  function inline(parent, text) {
+    String(text).split(/(`[^`\n]+`|\*\*[^*\n]+\*\*)/).forEach(function (seg) {
+      if (seg.length > 1 && seg.startsWith('`') && seg.endsWith('`')) parent.appendChild(h('code', null, seg.slice(1, -1)));
+      else if (seg.length > 4 && seg.startsWith('**') && seg.endsWith('**')) parent.appendChild(h('strong', null, seg.slice(2, -2)));
+      else if (seg) parent.appendChild(document.createTextNode(seg));
+    });
+  }
   function md(text) {
     const box = h('div');
     const parts = String(text || '').split(/```/);
@@ -48,14 +55,30 @@
         const code = h('code', null, part.replace(/^[a-zA-Z0-9_+-]*\n/, ''));
         pre.appendChild(code);
         box.appendChild(pre);
-      } else if (part.trim()) {
-        const p = h('p');
-        part.replace(/^\n+|\n+$/g, '').split(/(`[^`\n]+`)/).forEach(function (seg) {
-          if (seg.startsWith('`') && seg.endsWith('`') && seg.length > 1) p.appendChild(h('code', null, seg.slice(1, -1)));
-          else p.appendChild(document.createTextNode(seg.replace(/\*\*(.+?)\*\*/g, '$1')));
-        });
-        box.appendChild(p);
+        return;
       }
+      // Paragraphs split on blank lines; a run of "- x" / "1. x" lines is a list.
+      part.replace(/^\n+|\n+$/g, '').split(/\n{2,}/).forEach(function (block) {
+        if (!block.trim()) return;
+        const lines = block.split('\n');
+        let list = null;
+        let para = null;
+        lines.forEach(function (line) {
+          const m = /^\s*([-*+]|\d{1,3}[.)])\s+(.*)$/.exec(line);
+          if (m) {
+            const tag = /\d/.test(m[1]) ? 'ol' : 'ul';
+            if (!list || list.tagName.toLowerCase() !== tag) { list = h(tag); box.appendChild(list); }
+            para = null;
+            const li = h('li');
+            inline(li, m[2]);
+            list.appendChild(li);
+          } else {
+            list = null;
+            if (!para) { para = h('p'); box.appendChild(para); } else para.appendChild(document.createTextNode(' '));
+            inline(para, line);
+          }
+        });
+      });
     });
     return box;
   }
@@ -353,8 +376,14 @@
     mode.addEventListener('change', function () { S.mode = mode.value; });
     const fillModels = function () {
       model.textContent = '';
-      const list = S.models.length ? S.models : [{ id: S.model || 'default', name: S.model || 'Default model' }];
-      list.forEach(function (m) { const o = h('option', null, m.name || m.id); o.value = m.id; if (m.id === S.model) o.selected = true; model.appendChild(o); });
+      let list = S.models.length ? S.models : [{ id: S.model || 'default', name: S.model || 'Default model' }];
+      // The computer may name its model without the catalogue prefix
+      // ("claude-sonnet-5-5" vs "payg/claude-sonnet-5-5"): match either way, and
+      // never show a different model than the one that will be used.
+      const same = function (id) { return id === S.model || id.split('/').pop() === String(S.model).split('/').pop(); };
+      let hit = list.find(function (m) { return m.id === S.model; }) || list.find(function (m) { return same(m.id); });
+      if (S.model && !hit) { hit = { id: S.model, name: S.model }; list = [hit].concat(list); }
+      list.forEach(function (m) { const o = h('option', null, m.name || m.id); o.value = m.id; if (hit && m.id === hit.id) o.selected = true; model.appendChild(o); });
     };
     fillModels();
     if (!S.models.length) api('api/models').then(function (d) { S.models = d.models || []; if (!S.model) S.model = d.default; fillModels(); }).catch(function () {});

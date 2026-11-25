@@ -9,6 +9,7 @@ import type {
   ExtContributions,
   InstalledExt,
   MarketItem,
+  ExtDetails,
   AIRequest,
   AIStreamEvent,
   AppSettings,
@@ -111,6 +112,7 @@ export interface VoidAPI {
 
   // --- VS Code extensions from Open VSX (themes and snippets; no extension host) ---
   extSearch(query: string, category?: string, offset?: number): Promise<{ items: MarketItem[]; total: number }>;
+  extDetails(namespace: string, name: string): Promise<ExtDetails>;
   extInstall(namespace: string, name: string): Promise<InstalledExt>;
   extUninstall(id: string): Promise<void>;
   extList(): Promise<InstalledExt[]>;

@@ -41,7 +41,14 @@ const frozenProtoSafe = {
       // Method-name keyed proxy tables include 'constructor'; a null-prototype
       // object can hold it.
       const out2 = out.replace(/const foreignProxy = \{\};/g, 'const foreignProxy = Object.create(null);');
-      return { contents: out2, loader: 'js' };
+      // Monarch keyword tables (JS/TS keywords include 'constructor'): without
+      // this every .js/.ts file failed to tokenize under a frozen prototype.
+      const out3 = out2.replace(
+        /function arrayToHash\(array\) \{\s*const result = \{\};\s*for \(const e of array\) \{\s*result\[e\] = true;\s*\}/,
+        'function arrayToHash(array) { const result = {}; for (const e of array) { Object.defineProperty(result, e, { value: true, writable: true, enumerable: true, configurable: true }); }',
+      );
+      if (args.path.endsWith('monarchCompile.js') && out3 === out2) throw new Error('frozen-proto-safe: arrayToHash patch no longer applies');
+      return { contents: out3, loader: 'js' };
     });
   },
 };

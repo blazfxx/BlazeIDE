@@ -980,6 +980,11 @@ pub async fn ext_search(state: State<'_, AppState>, query: String, category: Opt
 }
 
 #[tauri::command]
+pub async fn ext_details(state: State<'_, AppState>, namespace: String, name: String) -> CmdResult<extensions::Details> {
+    extensions::details(&state.http, &namespace, &name).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn ext_install(state: State<'_, AppState>, namespace: String, name: String) -> CmdResult<extensions::Installed> {
     extensions::install(&state.http, &state.ext_dir, &namespace, &name).await.map_err(|e| e.to_string())
 }

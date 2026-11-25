@@ -187,6 +187,7 @@ async function boot(): Promise<void> {
   bus.on('open-settings', () => openSettingsTab(editor));
   initPresence();
   bus.on('open-blbots', () => void import('./blbots/index').then((m) => m.openBlBots(editor)));
+  bus.on('open-extension', (ref) => void import('./extensions/details').then((m) => m.openExtensionDetails(editor, ref)));
   bus.on('session-changed', (s) => {
     if (s === null) window.location.reload();
   });

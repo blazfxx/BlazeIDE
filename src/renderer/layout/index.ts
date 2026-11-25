@@ -105,7 +105,7 @@ export function initLayout(app: HTMLElement): LayoutEls {
         const head = el('div', 'sb-view-head', 'Extensions');
         const body = el('div', 'sb-ext-body');
         extView.append(head, body);
-        void import('../settings/extensions').then((m) => { for (const row of m.buildExtensionsSection()) body.appendChild(row); });
+        void import('../extensions/view').then((m) => m.buildExtensionsView(body));
       }
       markActive();
     });

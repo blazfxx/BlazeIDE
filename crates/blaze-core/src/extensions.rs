@@ -342,6 +342,291 @@ pub async fn install(http: &reqwest::Client, root: &Path, namespace: &str, name:
     install_vsix(&bytes, root, &format!("{namespace}.{name}"))
 }
 
+// ---------------------------------------------------------------- details page
+
+const MAX_README: usize = 400 * 1024;
+const MAX_IMAGES: usize = 16;
+const MAX_IMAGE: usize = 2 * 1024 * 1024;
+
+#[derive(Serialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Publisher {
+    /// The namespace's display name (what the marketplace shows as publisher).
+    pub name: String,
+    pub namespace: String,
+    pub login: String,
+    pub full_name: String,
+    /// Avatar as a data: URL (fetched here; the page may only load images
+    /// from open-vsx.org).
+    pub avatar: Option<String>,
+    pub homepage: String,
+    pub verified: bool,
+    /// Number of extensions in this namespace.
+    pub extensions: usize,
+}
+
+#[derive(Serialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Details {
+    pub id: String,
+    pub namespace: String,
+    pub name: String,
+    pub display_name: String,
+    pub description: String,
+    pub version: String,
+    pub downloads: u64,
+    pub rating: Option<f64>,
+    pub review_count: u64,
+    pub verified: bool,
+    pub icon_url: Option<String>,
+    pub homepage: String,
+    pub repository: String,
+    pub bugs: String,
+    pub license: String,
+    pub categories: Vec<String>,
+    pub tags: Vec<String>,
+    /// ISO time of the latest version.
+    pub updated: String,
+    pub size: u64,
+    pub versions: usize,
+    pub gallery_color: String,
+    pub publisher: Publisher,
+    pub readme: String,
+    pub changelog: String,
+    /// Image URL (as written in the readme/changelog) -> data: URL.
+    pub images: std::collections::BTreeMap<String, String>,
+    /// What the extension contributes, from its package.json.
+    pub themes: Vec<String>,
+    pub snippets: Vec<String>,
+    /// Contribution kinds Blaze IDE cannot run (commands, languages, ...).
+    pub unsupported: Vec<String>,
+}
+
+async fn get_text(http: &reqwest::Client, url: &str, max: usize) -> Option<String> {
+    let r = http.get(registry_url(url).ok()?).timeout(Duration::from_secs(15)).send().await.ok()?;
+    if !r.status().is_success() {
+        return None;
+    }
+    let b = r.bytes().await.ok()?;
+    let mut s = String::from_utf8_lossy(&b[..b.len().min(max)]).into_owned();
+    if b.len() > max {
+        s.push_str("\n\n…");
+    }
+    Some(s)
+}
+
+/// Fetch one https image for the details page (any host: a README's pictures
+/// live on GitHub, shields.io, ...), returned as a data: URL.
+async fn get_image(http: &reqwest::Client, url: &str) -> Option<String> {
+    use base64::Engine;
+    let u = reqwest::Url::parse(url).ok()?;
+    if u.scheme() != "https" || u.host_str().is_none() {
+        return None;
+    }
+    let r = http.get(u).timeout(Duration::from_secs(12)).send().await.ok()?;
+    if !r.status().is_success() || r.content_length().map(|n| n as usize > MAX_IMAGE).unwrap_or(false) {
+        return None;
+    }
+    let ct = r.headers().get(reqwest::header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("").split(';').next().unwrap_or("").trim().to_ascii_lowercase();
+    let mime = match ct.as_str() {
+        "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/svg+xml" => ct,
+        _ => {
+            // GitHub raw serves images as octet-stream / text/plain: guess from the name.
+            let path = url.split(['?', '#']).next().unwrap_or("").to_ascii_lowercase();
+            let ext = path.rsplit('.').next().unwrap_or("");
+            match ext {
+                "png" => "image/png".into(),
+                "jpg" | "jpeg" => "image/jpeg".into(),
+                "gif" => "image/gif".into(),
+                "webp" => "image/webp".into(),
+                "svg" => "image/svg+xml".into(),
+                _ => return None,
+            }
+        }
+    };
+    let b = r.bytes().await.ok()?;
+    (b.len() <= MAX_IMAGE).then(|| format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(&b)))
+}
+
+/// `https://github.com/o/r(.git)` -> `https://raw.githubusercontent.com/o/r/HEAD/`.
+fn raw_base(repo: &str) -> Option<String> {
+    let r = repo.trim().trim_start_matches("git+").trim_end_matches('/').trim_end_matches(".git");
+    let rest = r.strip_prefix("https://github.com/").or_else(|| r.strip_prefix("http://github.com/"))?;
+    let mut it = rest.split('/');
+    let (o, n) = (it.next()?, it.next()?);
+    (!o.is_empty() && !n.is_empty()).then(|| format!("https://raw.githubusercontent.com/{o}/{n}/HEAD/"))
+}
+
+/// Image references in markdown (`![a](url "t")`) and inline HTML (`<img src="url">`).
+pub fn image_refs(md: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = md;
+    while let Some(i) = rest.find("](") {
+        let before = &rest[..i];
+        let is_img = before.rfind("![").map(|j| !before[j..].contains("\n\n")).unwrap_or(false);
+        let after = &rest[i + 2..];
+        let end = after.find(')').unwrap_or(after.len());
+        if is_img {
+            let target = after[..end].trim().trim_start_matches('<');
+            let url = target.split_whitespace().next().unwrap_or("").trim_end_matches('>');
+            if !url.is_empty() {
+                out.push(url.to_string());
+            }
+        }
+        rest = &after[end.min(after.len())..];
+    }
+    let lower = md.to_ascii_lowercase();
+    let mut from = 0;
+    while let Some(i) = lower[from..].find("<img") {
+        let start = from + i;
+        let tag_end = lower[start..].find('>').map(|e| start + e).unwrap_or(lower.len());
+        let tag = &md[start..tag_end];
+        let tl = &lower[start..tag_end];
+        if let Some(p) = tl.find("src=") {
+            let v = &tag[p + 4..];
+            let q = v.chars().next().unwrap_or(' ');
+            let url = if q == '"' || q == '\'' { v[1..].split(q).next().unwrap_or("") } else { v.split(|c: char| c.is_whitespace() || c == '/').next().unwrap_or("") };
+            if !url.is_empty() {
+                out.push(url.to_string());
+            }
+        }
+        from = tag_end.max(start + 4);
+    }
+    out.dedup();
+    out
+}
+
+fn resolve_image(raw: &str, base: Option<&str>) -> Option<String> {
+    if raw.starts_with("https://") {
+        // github.com/o/r/blob/x -> raw (the blob page is HTML).
+        if let Some(rest) = raw.strip_prefix("https://github.com/") {
+            let parts: Vec<&str> = rest.splitn(4, '/').collect();
+            if parts.len() == 4 && (parts[2] == "blob" || parts[2] == "raw") {
+                return Some(format!("https://raw.githubusercontent.com/{}/{}/{}", parts[0], parts[1], parts[3]));
+            }
+        }
+        return Some(raw.to_string());
+    }
+    if raw.starts_with("http:") || raw.starts_with("data:") || raw.starts_with("//") || raw.contains("..") {
+        return None;
+    }
+    base.map(|b| format!("{b}{}", raw.trim_start_matches("./").trim_start_matches('/')))
+}
+
+fn contributes_summary(manifest: &Value) -> (Vec<String>, Vec<String>, Vec<String>) {
+    let c = manifest.get("contributes");
+    let list = |k: &str, f: &str| -> Vec<String> {
+        c.and_then(|c| c.get(k)).and_then(Value::as_array).map(|a| a.iter().filter_map(|x| x.get(f).and_then(Value::as_str).map(str::to_string)).collect()).unwrap_or_default()
+    };
+    let themes = list("themes", "label");
+    let mut snippets = list("snippets", "language");
+    snippets.dedup();
+    let mut other: Vec<String> = c
+        .and_then(Value::as_object)
+        .map(|o| o.keys().filter(|k| *k != "themes" && *k != "snippets").map(|k| k.to_string()).collect())
+        .unwrap_or_default();
+    if manifest.get("main").is_some() || manifest.get("browser").is_some() {
+        other.insert(0, "its own code".into());
+    }
+    (themes, snippets, other)
+}
+
+/// Everything the extension details page shows: registry facts, publisher,
+/// README and changelog (with their pictures inlined) and what it contributes.
+pub async fn details(http: &reqwest::Client, namespace: &str, name: &str) -> Result<Details> {
+    if !valid_part(namespace) || !valid_part(name) {
+        return Err(Error::msg("Invalid extension id"));
+    }
+    let resp = http
+        .get(format!("{REGISTRY}/api/{namespace}/{name}"))
+        .timeout(Duration::from_secs(15))
+        .send()
+        .await
+        .map_err(|e| Error::msg(format!("Could not reach the extension registry: {e}")))?;
+    if !resp.status().is_success() {
+        return Err(Error::msg(if resp.status().as_u16() == 404 { "Extension not found".to_string() } else { format!("The extension registry answered {}", resp.status().as_u16()) }));
+    }
+    let m: Value = resp.json().await.map_err(|_| Error::msg("Unreadable registry answer"))?;
+    let s = |k: &str| m.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let strs = |k: &str| -> Vec<String> { m.get(k).and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).filter(|t| !t.starts_with("__")).map(str::to_string).collect()).unwrap_or_default() };
+    let file = |k: &str| m.pointer(&format!("/files/{k}")).and_then(Value::as_str).map(str::to_string);
+    let display = s("displayName");
+    let pubd = m.get("publishedBy");
+    let ps = |k: &str| pubd.and_then(|p| p.get(k)).and_then(Value::as_str).unwrap_or("").to_string();
+
+    let readme_url = file("readme");
+    let changelog_url = file("changelog");
+    let manifest_url = file("manifest");
+    let ns_url = format!("{REGISTRY}/api/{namespace}");
+    let avatar_url = ps("avatarUrl");
+    let (readme, changelog, manifest, ns, avatar) = tokio::join!(
+        async { match &readme_url { Some(u) => get_text(http, u, MAX_README).await.unwrap_or_default(), None => String::new() } },
+        async { match &changelog_url { Some(u) => get_text(http, u, MAX_README).await.unwrap_or_default(), None => String::new() } },
+        async { match &manifest_url { Some(u) => get_text(http, u, 1024 * 1024).await.and_then(|t| serde_json::from_str::<Value>(&t).ok()), None => None } },
+        async { get_text(http, &ns_url, 256 * 1024).await.and_then(|t| serde_json::from_str::<Value>(&t).ok()) },
+        async { if avatar_url.is_empty() { None } else { get_image(http, &avatar_url).await } },
+    );
+
+    let repo = s("repository");
+    let base = raw_base(&repo);
+    let mut wanted: Vec<(String, String)> = Vec::new();
+    for r in image_refs(&readme).into_iter().chain(image_refs(&changelog)) {
+        if wanted.len() >= MAX_IMAGES {
+            break;
+        }
+        if wanted.iter().any(|(k, _)| *k == r) {
+            continue;
+        }
+        if let Some(u) = resolve_image(&r, base.as_deref()) {
+            wanted.push((r, u));
+        }
+    }
+    let fetched = futures_util::future::join_all(wanted.iter().map(|(_, u)| get_image(http, u))).await;
+    let images = wanted.into_iter().zip(fetched).filter_map(|((k, _), v)| v.map(|v| (k, v))).collect();
+
+    let (themes, snippets, unsupported) = manifest.as_ref().map(contributes_summary).unwrap_or_default();
+    let ns_display = s("namespaceDisplayName");
+    Ok(Details {
+        id: format!("{namespace}.{name}"),
+        namespace: namespace.to_string(),
+        name: name.to_string(),
+        display_name: if display.is_empty() { name.to_string() } else { display },
+        description: s("description"),
+        version: s("version"),
+        downloads: m.get("downloadCount").and_then(Value::as_u64).unwrap_or(0),
+        rating: m.get("averageRating").and_then(Value::as_f64),
+        review_count: m.get("reviewCount").and_then(Value::as_u64).unwrap_or(0),
+        verified: m.get("verified").and_then(Value::as_bool).unwrap_or(false),
+        icon_url: file("icon").filter(|u| registry_url(u).is_ok()),
+        homepage: s("homepage"),
+        repository: repo.trim_start_matches("git+").trim_end_matches(".git").to_string(),
+        bugs: s("bugs"),
+        license: s("license"),
+        categories: strs("categories"),
+        tags: strs("tags"),
+        updated: s("timestamp"),
+        size: m.pointer("/downloadSizes/universal").and_then(Value::as_u64).or_else(|| m.get("downloadSizes").and_then(Value::as_object).and_then(|o| o.values().next()).and_then(Value::as_u64)).unwrap_or(0),
+        versions: m.get("allVersions").and_then(Value::as_object).map(|o| o.keys().filter(|k| *k != "latest" && *k != "pre-release").count()).unwrap_or(0),
+        gallery_color: s("galleryColor"),
+        publisher: Publisher {
+            name: if ns_display.is_empty() { namespace.to_string() } else { ns_display },
+            namespace: namespace.to_string(),
+            login: ps("loginName"),
+            full_name: ps("fullName"),
+            avatar,
+            homepage: ps("homepage"),
+            verified: m.get("verified").and_then(Value::as_bool).unwrap_or(false),
+            extensions: ns.as_ref().and_then(|n| n.get("extensions")).and_then(Value::as_object).map(|o| o.len()).unwrap_or(0),
+        },
+        readme,
+        changelog,
+        images,
+        themes,
+        snippets,
+        unsupported,
+    })
+}
+
 // ---------------------------------------------------------------- vsix
 
 fn read_entry<R: Read + std::io::Seek>(zip: &mut zip::ZipArchive<R>, name: &str) -> Result<Vec<u8>> {
@@ -676,6 +961,20 @@ mod tests {
         let l = list_installed(root.path());
         assert_eq!(l.len(), 1);
         assert_eq!(l[0].version, "1.1.0");
+    }
+
+    #[test]
+    fn finds_readme_images() {
+        let md = "# T\n![shot](images/a.png \"t\")\n<p align=center><img width=200 src=\"https://x.dev/b.svg\"></p>\n[not](c.png)";
+        assert_eq!(image_refs(md), vec!["images/a.png".to_string(), "https://x.dev/b.svg".to_string()]);
+        let base = raw_base("git+https://github.com/dracula/visual-studio-code.git");
+        assert_eq!(base.as_deref(), Some("https://raw.githubusercontent.com/dracula/visual-studio-code/HEAD/"));
+        assert_eq!(resolve_image("./images/a.png", base.as_deref()).unwrap(), "https://raw.githubusercontent.com/dracula/visual-studio-code/HEAD/images/a.png");
+        assert_eq!(resolve_image("https://github.com/o/r/blob/main/x.png", None).unwrap(), "https://raw.githubusercontent.com/o/r/main/x.png");
+        assert!(resolve_image("http://insecure/x.png", base.as_deref()).is_none());
+        assert!(resolve_image("../up.png", base.as_deref()).is_none());
+        let (t, s, o) = contributes_summary(&serde_json::json!({"main":"x.js","contributes":{"themes":[{"label":"Dark"}],"snippets":[{"language":"go"}],"commands":[]}}));
+        assert_eq!((t, s, o), (vec!["Dark".to_string()], vec!["go".to_string()], vec!["its own code".to_string(), "commands".to_string()]));
     }
 
     #[test]

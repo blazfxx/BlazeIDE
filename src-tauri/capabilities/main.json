@@ -52,6 +52,7 @@
     "allow-providers-delete",
     "allow-providers-fetch-models",
     "allow-ext-search",
+    "allow-ext-details",
     "allow-ext-install",
     "allow-ext-uninstall",
     "allow-ext-list",

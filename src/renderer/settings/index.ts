@@ -8,10 +8,11 @@ import { iconSearch } from '../icons/index';
 import type { EditorArea } from '../editor/index';
 import { AMBIENT_PRESETS, setAmbientVolume } from '../ambientAudio';
 import { buildKeybindingsSection } from './keybindings';
-import { buildExtensionsSection } from './extensions';
 import { buildProvidersSection } from './providers';
 import { buildCliSection } from './cli';
 import { buildMobileSection } from './mobile';
+import { themeKey } from '../extensions/apply';
+import type { InstalledExt } from '../../shared/types';
 import { currentWork } from '../presence';
 import { routingChoices, setRouting } from '../ai-panel/routing';
 import type { AIRouting } from '../../shared/types';
@@ -208,6 +209,19 @@ function buildAppearanceSection(): HTMLElement[] {
       )
     )
   );
+
+  // Editor colour theme from an installed extension (Extensions sidebar).
+  const themeHost = el('div', '');
+  const renderThemes = (list: InstalledExt[]): void => {
+    themeHost.textContent = '';
+    const options = [{ value: '', label: 'Blaze default' }];
+    for (const e of list) for (const t of e.themes) options.push({ value: themeKey(e.id, t.label), label: `${t.label} (${e.displayName})` });
+    const current = options.some((o) => o.value === state.settings.editorTheme) ? state.settings.editorTheme : '';
+    themeHost.appendChild(selectInput(options, current, (v) => void apply({ editorTheme: v })));
+  };
+  renderThemes([]);
+  void window.void.extList().then(renderThemes, () => undefined);
+  rows.push(settingRow('Editor colour theme', 'From an extension you installed in the Extensions side bar.', themeHost));
 
   // Custom background: picked in the native dialog and copied into the app's
   // own media folder (it used to be inlined as a data URL, which the settings
@@ -423,7 +437,6 @@ const SECTIONS: Array<{ id: string; label: string; build: () => HTMLElement[] }>
   { id: 'sec-cli', label: 'Command line', build: buildCliSection },
   { id: 'sec-mobile', label: 'Continue on mobile', build: buildMobileSection },
   { id: 'sec-ai', label: 'AI', build: buildAISection },
-  { id: 'sec-extensions', label: 'Extensions', build: buildExtensionsSection },
   { id: 'sec-providers', label: 'Custom providers', build: buildProvidersSection },
   { id: 'sec-account', label: 'Account', build: buildAccountSection },
   { id: 'sec-privacy', label: 'Privacy', build: buildPrivacySection },

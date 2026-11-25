@@ -47,6 +47,8 @@ export interface BusEvents {
   'open-palette': { mode: 'commands' | 'files' };
   'open-settings': void;
   'open-blbots': void;
+  /** Show an extension's page (from the Extensions sidebar). */
+  'open-extension': { namespace: string; name: string; item?: import('../shared/types').MarketItem };
   'open-account': void;
   'new-terminal': void;
   'focus-ai-input': void;

@@ -17,7 +17,7 @@
         "script-src": "'self'",
         "style-src": "'self' 'unsafe-inline'",
         "font-src": "'self' data:",
-        "img-src": "'self' data: blob: https://open-vsx.org blazemedia: http://blazemedia.localhost",
+        "img-src": "'self' data: blob: https://open-vsx.org https://openvsx.eclipsecontent.org blazemedia: http://blazemedia.localhost",
         "media-src": "'self' blob: blazemedia: http://blazemedia.localhost",
         "connect-src": "'self' ipc: http://ipc.localhost blazemedia: http://blazemedia.localhost",
         "worker-src": "'self' blob:",

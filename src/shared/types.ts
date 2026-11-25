@@ -383,6 +383,47 @@ export interface MarketItem {
   iconUrl: string | null;
 }
 
+export interface ExtDetails {
+  id: string;
+  namespace: string;
+  name: string;
+  displayName: string;
+  description: string;
+  version: string;
+  downloads: number;
+  rating: number | null;
+  reviewCount: number;
+  verified: boolean;
+  iconUrl: string | null;
+  homepage: string;
+  repository: string;
+  bugs: string;
+  license: string;
+  categories: string[];
+  tags: string[];
+  updated: string;
+  size: number;
+  versions: number;
+  galleryColor: string;
+  publisher: {
+    name: string;
+    namespace: string;
+    login: string;
+    fullName: string;
+    avatar: string | null;
+    homepage: string;
+    verified: boolean;
+    extensions: number;
+  };
+  readme: string;
+  changelog: string;
+  /** Image URL as written in the readme -> data: URL. */
+  images: Record<string, string>;
+  themes: string[];
+  snippets: string[];
+  unsupported: string[];
+}
+
 export interface InstalledExt {
   id: string;
   displayName: string;
