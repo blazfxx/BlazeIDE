@@ -222,6 +222,7 @@ pub fn summarize(call: &ToolCall) -> String {
         "generate_video" => format!("Generate video {} ({})", s("path"), clip(s("prompt"))),
         "write_plan" => format!("Save plan: {}", s("title")),
         "ask_question" => "Ask you a question".into(),
+        "use_skill" => format!("Use skill: {} {}", s("name"), s("file")).trim_end().to_string(),
         other => clip(format!("{other} {}", if call.arguments.len() > 2 { call.arguments.as_str() } else { "" })),
     }
 }

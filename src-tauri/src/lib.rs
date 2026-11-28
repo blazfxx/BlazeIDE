@@ -10,6 +10,7 @@ mod menu;
 mod mobile;
 mod presence;
 mod secrets;
+mod skills;
 mod windows;
 
 use std::collections::HashMap;
@@ -183,6 +184,18 @@ pub fn run() {
             commands::ext_search,
             commands::ext_details,
             commands::ext_icon_theme,
+            commands::bots_avatar_image,
+            skills::skills_list,
+            skills::skills_get,
+            skills::skills_save,
+            skills::skills_remove,
+            skills::skills_set_chat,
+            skills::skills_starters,
+            skills::skills_add_starter,
+            skills::skills_discover,
+            skills::skills_pick_folder,
+            skills::skills_import,
+            skills::skills_use,
             commands::ext_install,
             commands::ext_uninstall,
             commands::ext_list,

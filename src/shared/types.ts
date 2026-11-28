@@ -115,6 +115,7 @@ export type AgentToolName =
   | 'generate_video'
   | 'browser'
   | 'write_plan'
+  | 'use_skill'
   | 'ask_question';
 
 export interface AIRequest {

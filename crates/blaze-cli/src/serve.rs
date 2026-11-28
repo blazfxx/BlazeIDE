@@ -60,6 +60,7 @@ impl Host for CliHost {
         c.video_model = self.video_model.clone();
         c.reasoning_effort = Some(if self.effort.is_empty() { "medium".into() } else { self.effort.clone() });
         c.extra_system = Some("This turn was sent from the user's phone (Continue on mobile). There is no editor or preview browser; keep replies short enough to read on a phone.".into());
+        blaze_core::skills::tool::for_chat(&mut c, &config::config_dir());
         c
     }
     fn projects(&self) -> Vec<PathBuf> {

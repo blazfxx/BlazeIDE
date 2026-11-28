@@ -199,6 +199,16 @@ export async function execToolCall(call: ToolCall, deps: ToolExecDeps): Promise<
     return execGenerateVideo(call, deps);
   }
 
+  // Reading one of the user's own skills never asks.
+  if (call.name === 'use_skill') {
+    const card = createToolCard(call, { gated: false });
+    deps.view.mount(card.element);
+    card.setRunning();
+    const text = await window.void.skillsUse(call.arguments).catch((e: unknown) => `Error: ${String(e)}`);
+    card.setResult(text, text.startsWith('Error:'));
+    return text;
+  }
+
   // The agent's own browser (the Preview tab).
   if (call.name === 'browser') {
     const card = createToolCard(call, { gated: false });

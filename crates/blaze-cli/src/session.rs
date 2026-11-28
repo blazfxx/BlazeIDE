@@ -146,6 +146,7 @@ impl Session {
              Keep answers compact for a terminal: short paragraphs, plain markdown."
                 .into(),
         );
+        blaze_core::skills::tool::for_chat(&mut cfg, &config::config_dir());
         cfg
     }
 

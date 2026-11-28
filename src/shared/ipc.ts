@@ -156,10 +156,25 @@ export interface VoidAPI {
   botsThreads(bot: string): Promise<{ threads: Array<{ id: string; title: string; updatedAt: number; messageCount: number }>; memory: string }>;
   botsThread(bot: string, id: string): Promise<{ id: string; title: string; messages: BotMsg[]; pending: BotPending[] }>;
   botsSetMemory(bot: string, text: string): Promise<void>;
+  /** Draw an avatar with the BlazeAPI image model; returns a data: URL. */
+  botsAvatarImage(prompt: string): Promise<string>;
   botsSend(bot: string, thread: string | null, text: string): Promise<{ runId: string; chatId: string }>;
   botsCancel(runId: string): Promise<void>;
   botsAnswer(id: string, allow: boolean | null, answers: string[] | null): Promise<void>;
   botsComputer(bot: string): Promise<string>;
+  skillsList(): Promise<SkillInfo[]>;
+  skillsGet(name: string): Promise<{ text: string; files: string[]; folder: string | null }>;
+  skillsSave(old: string | null, text: string): Promise<string>;
+  skillsRemove(name: string): Promise<void>;
+  skillsSetChat(names: string[], on: boolean): Promise<void>;
+  skillsStarters(): Promise<Array<{ name: string; description: string; added: boolean }>>;
+  skillsAddStarter(name: string): Promise<string>;
+  skillsDiscover(project: string | null): Promise<FoundSkill[]>;
+  /** Pick a folder in a system dialog; null when cancelled. */
+  skillsPickFolder(): Promise<FoundSkill[] | null>;
+  skillsImport(paths: string[], replace: boolean): Promise<string[]>;
+  /** The IDE chat's use_skill call. */
+  skillsUse(args: string): Promise<string>;
   roomsSave(room: { id: string; name: string; members: string[]; lead: string; instructions: string; folder: string }): Promise<{ id: string }>;
   roomsDelete(id: string): Promise<void>;
   roomsGet(id: string): Promise<{ id: string; name: string; messages: BotMsg[]; pending: BotPending[] }>;
@@ -212,8 +227,17 @@ export interface MobileStatus {
 
 export type BotSchedule = { kind: 'daily' | 'weekdays'; time: string } | { kind: 'weekly'; days: number[]; time: string } | { kind: 'every'; hours: number } | { kind: 'cron'; expr: string };
 export interface BotRoutine { id: string; title: string; prompt: string; schedule: BotSchedule; enabled: boolean; catchUp: boolean; lastRun: number; thread: string | null }
+export interface SkillInfo { name: string; description: string; source: string; chat: boolean; files: number; bytes: number }
+export interface FoundSkill { name: string; description: string; source: string; path: string; status: 'new' | 'same' | 'differs' }
+
 export interface BotProfile {
   id: string; name: string; avatar: string; color: string; title: string; soul: string;
+  /** Names of library skills this bot has. */
+  skills?: string[];
+  /** Drawn face 1..8 (0 or missing = show `avatar`). */
+  face?: number;
+  /** Avatar body shape, frame, eye colour and an optional picture (data URL). */
+  body?: string; frame?: string; features?: string; image?: string;
   engine: { kind: 'blaze' } | { kind: 'claude' | 'codex' | 'grok'; bin: string | null };
   model: string; approval: 'ask' | 'edits' | 'full'; folder: string; mode: string;
   routines: BotRoutine[]; checkBacks: Array<{ id: string; at: number; thread: string; note: string }>;

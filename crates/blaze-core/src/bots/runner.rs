@@ -50,8 +50,39 @@ impl BotCtx {
         cfg.extra_system = Some(sys);
         let computer = self.computer.as_ref().and_then(|f| f(bot));
         cfg.extra_tools = Some(Arc::new(BotTools { bots: self.bots.clone(), bot_id: bot.id.clone(), thread_id: thread, hand_off, computer }));
+        if bot.engine == Engine::Blaze {
+            crate::skills::tool::for_bot(&mut cfg, &self.config_dir, &bot.skills);
+        } else if let Some(list) = engine_skills(&self.config_dir, &bot.skills) {
+            // A local CLI has its own file tools, not use_skill.
+            let sys = cfg.extra_system.take().unwrap_or_default();
+            cfg.extra_system = Some(format!("{sys}\n{list}"));
+        }
         cfg
     }
+}
+
+fn engine_skills(config_dir: &Path, names: &[String]) -> Option<String> {
+    let lib = crate::skills::Library::open(config_dir);
+    let lines: Vec<String> = lib
+        .list()
+        .into_iter()
+        .filter(|s| names.contains(&s.name))
+        .filter_map(|s| {
+            let md = lib.folder(&s.name)?.join("SKILL.md");
+            Some(format!("- {}: {} (read {} first)", s.name, s.description.chars().take(160).collect::<String>(), md.display()))
+        })
+        .collect();
+    // Kept short: it travels as a command-line argument.
+    let mut out = String::from("<skills>\nWhen a task matches one of these skills, read its file and follow it.\n");
+    for l in &lines {
+        if out.len() + l.len() > 4_000 {
+            break;
+        }
+        out.push_str(l);
+        out.push('\n');
+    }
+    out.push_str("</skills>");
+    (!lines.is_empty()).then_some(out)
 }
 
 /// A new thread for a bot (kept in the bot's folder, not the project's).

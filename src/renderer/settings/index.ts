@@ -1,5 +1,6 @@
 // Settings tab — Cursor-style: left nav rail + searchable sections of rows.
 
+import { openSkillsLibrary } from '../skills/library';
 import { REASONING_LEVELS } from '../../shared/types';
 import { BILLING_URL, MODELS_URL } from '../../shared/modelCatalog';
 import { formatUsd } from '../account/index';
@@ -441,6 +442,17 @@ function buildSoundsSection(): HTMLElement[] {
   return rows;
 }
 
+function buildSkillsSection(): HTMLElement[] {
+  const open = el('button', '', 'Open the library');
+  open.addEventListener('click', () => openSkillsLibrary());
+  const imp = el('button', '', 'Import…');
+  imp.addEventListener('click', () => openSkillsLibrary({ tab: 'import' }));
+  return [
+    settingRow('Skills library', 'Add, write and edit skills for your bots and chats (also used by the blaze command and your phone).', open),
+    settingRow('Import skills', 'Copy the skills and slash commands you have in Claude Code, Codex or OpenCode.', imp),
+  ];
+}
+
 const SECTIONS: Array<{ id: string; label: string; build: () => HTMLElement[] }> = [
   { id: 'sec-editor', label: 'Editor', build: buildEditorSection },
   { id: 'sec-workbench', label: 'Workbench', build: buildWorkbenchSection },
@@ -449,6 +461,7 @@ const SECTIONS: Array<{ id: string; label: string; build: () => HTMLElement[] }>
   { id: 'sec-cli', label: 'Command line', build: buildCliSection },
   { id: 'sec-mobile', label: 'Continue on mobile', build: buildMobileSection },
   { id: 'sec-ai', label: 'AI', build: buildAISection },
+  { id: 'sec-skills', label: 'Skills', build: buildSkillsSection },
   { id: 'sec-providers', label: 'Custom providers', build: buildProvidersSection },
   { id: 'sec-account', label: 'Account', build: buildAccountSection },
   { id: 'sec-privacy', label: 'Privacy', build: buildPrivacySection },

@@ -445,6 +445,20 @@ pub async fn ai_send(app: AppHandle, window: WebviewWindow, state: State<'_, App
     // Video generation costs real money per clip: a separate opt-in.
     req.video_gen = Some(setting_bool(&state, "aiVideoGen", false) && req.video_gen != Some(false));
 
+    // Skills switched on for chat: one line each, plus the use_skill tool.
+    if matches!(req.mode.as_str(), "agent" | "plan") {
+        if let Ok(dir) = app.path().app_config_dir() {
+            let on: Vec<_> = blaze_core::skills::Library::open(&dir).list().into_iter().filter(|s| s.chat).collect();
+            if let Some(list) = blaze_core::skills::index(&on) {
+                req.extra_system = Some(match req.extra_system.take() {
+                    Some(s) => format!("{s}\n\n{list}"),
+                    None => list,
+                });
+                req.extra_tools.push(blaze_core::skills::tool::schema());
+            }
+        }
+    }
+
     let route = match route_for(&state, &req.model) {
         Ok(r) => r,
         Err(m) => {
@@ -684,6 +698,42 @@ async fn generate_video_cmd(state: &AppState, req: &MediaReq) -> String {
         failed.push(format!("{model}: {}", out.trim_start_matches("Error: ")));
     }
     format!("Error: no video model worked right now ({}). Continue without the video or try again later.", failed.join("; "))
+}
+
+/// BlBots: draw an avatar with the user's BlazeAPI image model (one image,
+/// billed to their balance; only on an explicit click). Returns a data: URL;
+/// the page scales it down before saving it on the bot.
+#[tauri::command]
+pub async fn bots_avatar_image(state: State<'_, AppState>, prompt: String) -> CmdResult<String> {
+    let prompt = prompt.trim();
+    if prompt.chars().count() > 500 {
+        return Err("Keep the description under 500 characters".into());
+    }
+    let Some(key) = state.api_key() else { return Err("Sign in to BlazeAPI to generate a picture".into()) };
+    let (list, _) = load_models(&state, false).await;
+    let candidates = models::image_candidates(&list, &setting_str(&state, "imageModel"));
+    if candidates.is_empty() {
+        return Err("No image model is available on your BlazeAPI account".into());
+    }
+    let full = format!(
+        "A friendly avatar for an AI assistant bot{}. One simple character, centred, filling most of the square, plain soft background, no text.",
+        if prompt.is_empty() { String::new() } else { format!(": {prompt}") }
+    );
+    let dir = std::env::temp_dir().join(format!("blaze-avatar-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&dir).map_err(err)?;
+    let route = routing(&state);
+    let mut last = String::from("Error: no image");
+    for model in candidates.iter().take(3) {
+        let job = models::ImageJob { model: Some(model.clone()), supplier: None, routing: &route, root: &dir, rel_path: "avatar.png", prompt: &full, aspect: Some("1:1") };
+        last = models::generate_image(&state.http, &state.v1_base, &key, job).await;
+        if !last.starts_with("Error") {
+            break;
+        }
+    }
+    let file = std::fs::read_dir(&dir).ok().and_then(|mut d| d.find_map(|e| e.ok().map(|e| e.path())));
+    let url = file.and_then(|p| std::fs::read(p).ok()).and_then(|b| models::image_data_url(&b));
+    let _ = std::fs::remove_dir_all(&dir);
+    url.ok_or_else(|| last.trim_start_matches("Error: ").to_string())
 }
 
 /// Suppliers (BlazeAPI codenames) that serve an image model, for Settings.

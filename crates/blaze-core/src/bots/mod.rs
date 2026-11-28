@@ -93,6 +93,10 @@ fn yes() -> bool {
     true
 }
 
+/// Drawn avatar bodies (`Bot::body`); "" = the default bot.
+pub const BODIES: &[&str] = &["", "bot", "blob", "circle", "squircle", "pill", "drop", "bell", "hex", "diamond", "star"];
+const MAX_AVATAR_IMAGE: usize = 300_000;
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Bot {
@@ -104,6 +108,23 @@ pub struct Bot {
     /// Avatar background colour (#rrggbb).
     #[serde(default)]
     pub color: String,
+    /// Drawn bot face in the IDE (1..=8; 0 = show `avatar` instead). Apps that
+    /// don't draw faces keep showing `avatar`.
+    #[serde(default)]
+    pub face: u8,
+    /// Body shape of the drawn avatar ("bot", "blob", "circle", ...).
+    #[serde(default)]
+    pub body: String,
+    /// Frame behind the avatar: "" (none), "circle", "rounded" or "square".
+    #[serde(default)]
+    pub frame: String,
+    /// Colour of the eyes and mouth: "" / "white" or "black".
+    #[serde(default)]
+    pub features: String,
+    /// An uploaded or generated picture (small data: URL) used instead of the
+    /// drawn avatar.
+    #[serde(default)]
+    pub image: String,
     /// One line under the name ("Writes and fixes tests").
     #[serde(default)]
     pub title: String,
@@ -137,6 +158,9 @@ pub struct Bot {
     /// A private Linux desktop for this bot (Docker), see `computer`.
     #[serde(default)]
     pub computer: bool,
+    /// Skills from the library this bot has (see `crate::skills`).
+    #[serde(default)]
+    pub skills: Vec<String>,
 }
 
 fn agent_mode() -> String {
@@ -167,6 +191,11 @@ impl Bot {
             name: name.trim().to_string(),
             avatar: name.trim().chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_else(|| "B".into()),
             color: "#3a3a3a".into(),
+            face: 0,
+            body: String::new(),
+            frame: String::new(),
+            features: String::new(),
+            image: String::new(),
             title: String::new(),
             soul: String::new(),
             engine: Engine::Blaze,
@@ -180,6 +209,7 @@ impl Bot {
             hidden: false,
             created: now_secs(),
             computer: false,
+            skills: Vec::new(),
         }
     }
 
@@ -193,6 +223,21 @@ impl Bot {
         }
         if self.soul.len() > MAX_SOUL {
             return Err(Error::msg(format!("Instructions are limited to {} KB", MAX_SOUL / 1000)));
+        }
+        if self.skills.len() > crate::skills::MAX_SKILLS || self.skills.iter().any(|s| s.is_empty() || crate::skills::slug(s) != *s) {
+            return Err(Error::msg("Unknown skill"));
+        }
+        if self.face > 8 {
+            return Err(Error::msg("Unknown bot face"));
+        }
+        if !BODIES.contains(&self.body.as_str()) || !["", "none", "circle", "rounded", "square"].contains(&self.frame.as_str()) || !["", "white", "black"].contains(&self.features.as_str()) {
+            return Err(Error::msg("Unknown avatar style"));
+        }
+        if !self.image.is_empty() {
+            let ok_kind = ["data:image/png;base64,", "data:image/jpeg;base64,", "data:image/webp;base64,", "data:image/gif;base64,"].iter().any(|p| self.image.starts_with(p));
+            if !ok_kind || self.image.len() > MAX_AVATAR_IMAGE || !self.image.split_once(',').map(|(_, b)| b.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'+' || c == b'/' || c == b'=')).unwrap_or(false) {
+                return Err(Error::msg("The avatar picture must be a PNG, JPEG, WebP or GIF under 300 KB"));
+            }
         }
         if self.avatar.chars().count() > 4 || !one_line(&self.avatar) {
             return Err(Error::msg("The avatar must be one emoji or letter"));
@@ -431,6 +476,28 @@ pub fn persona(bot: &Bot, memory: &str, roster: &[Bot], room: Option<&room::Room
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn avatar_style_is_checked() {
+        let mut b = Bot::new("Nova");
+        b.face = 3; b.body = "hex".into(); b.frame = "circle".into(); b.features = "black".into();
+        b.image = "data:image/png;base64,iVBORw0KGgo=".into();
+        assert!(b.validate().is_ok());
+        for bad in [("body", "triangle"), ("frame", "oval"), ("features", "red")] {
+            let mut x = b.clone();
+            match bad.0 { "body" => x.body = bad.1.into(), "frame" => x.frame = bad.1.into(), _ => x.features = bad.1.into() }
+            assert!(x.validate().is_err(), "{bad:?}");
+        }
+        let mut x = b.clone();
+        x.image = "data:text/html;base64,PHNjcmlwdD4=".into();
+        assert!(x.validate().is_err());
+        x.image = "data:image/png;base64,<script>".into();
+        assert!(x.validate().is_err());
+        x.image = format!("data:image/png;base64,{}", "A".repeat(400_000));
+        assert!(x.validate().is_err());
+        x.face = 9; x.image.clear();
+        assert!(x.validate().is_err());
+    }
+
     use super::*;
 
     #[test]

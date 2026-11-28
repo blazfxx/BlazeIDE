@@ -20,7 +20,7 @@ export function argSummary(call: ToolCall): string {
     const parsed: unknown = JSON.parse(call.arguments || '{}');
     if (parsed !== null && typeof parsed === 'object') {
       const o = parsed as Record<string, unknown>;
-      const v = o.path ?? o.command ?? o.query ?? '';
+      const v = o.path ?? o.command ?? o.query ?? o.name ?? '';
       if (typeof v === 'string' && v) return v.length > 60 ? `${v.slice(0, 60)}...` : v;
     }
   } catch {

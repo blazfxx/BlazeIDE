@@ -11,6 +11,7 @@ mod providers;
 mod update;
 mod rc;
 mod serve;
+mod skills;
 mod session;
 mod tui;
 
@@ -110,6 +111,11 @@ enum Cmd {
     Bots {
         #[command(subcommand)]
         cmd: bots::BotsCmd,
+    },
+    /// Skills for your bots and chats; import Claude Code, Codex and OpenCode ones.
+    Skills {
+        #[command(subcommand)]
+        cmd: skills::SkillsCmd,
     },
     /// Manage Continue on mobile: password, phones, domain tunnel token.
     Mobile {
@@ -231,6 +237,11 @@ async fn run(mut cli: Cli) -> Result<(), String> {
             return bots::run(&mut s, cmd).await;
         }
     }
+    if matches!(cli.cmd, Some(Cmd::Skills { .. })) {
+        if let Some(Cmd::Skills { cmd }) = cli.cmd.take() {
+            return skills::run(cmd);
+        }
+    }
     match &cli.cmd {
         Some(Cmd::Login { key }) => return login(&mut s, *key).await,
         Some(Cmd::Logout) => {
@@ -276,7 +287,7 @@ async fn run(mut cli: Cli) -> Result<(), String> {
             }
             return serve::serve(&mut s, opts).await;
         }
-        Some(Cmd::Bots { .. }) | Some(Cmd::Providers { .. }) | Some(Cmd::Update { .. }) => unreachable!("handled above"),
+        Some(Cmd::Bots { .. }) | Some(Cmd::Skills { .. }) | Some(Cmd::Providers { .. }) | Some(Cmd::Update { .. }) => unreachable!("handled above"),
         Some(Cmd::Mobile { cmd }) => {
             use blaze_core::remote::auth;
             return match cmd {

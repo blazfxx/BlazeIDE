@@ -4,7 +4,10 @@
 
 import { el } from '../state';
 import type { EditorArea } from '../editor/index';
-import type { BotProfile, BotRoutine, BotsOverview } from '../../shared/ipc';
+import type { BotProfile, BotsOverview } from '../../shared/ipc';
+import { botAvatar, openBotEditor, TEMPLATES, type Template } from './create';
+import { faceSvg, FACE_COLORS } from './faces';
+import { openSkillsLibrary } from '../skills/library';
 
 type Target = { kind: 'bot'; id: string; thread: string | null } | { kind: 'room'; id: string } | null;
 
@@ -14,9 +17,9 @@ function t(tag: keyof HTMLElementTagNameMap, cls: string, text?: string): HTMLEl
   return e;
 }
 
-function avatar(b: { avatar: string; color: string; name: string }, size: 'sm' | 'md' | 'lg' = 'md'): HTMLElement {
-  const a = t('span', `bb-avatar ${size}`, b.avatar || b.name.slice(0, 1));
-  if (/^#[0-9a-fA-F]{6}$/.test(b.color)) a.style.background = b.color;
+function avatar(b: { avatar: string; color: string; name: string; face?: number }, size: 'sm' | 'md' | 'lg' = 'md'): HTMLElement {
+  const a = botAvatar(b, size === 'sm' ? 30 : size === 'md' ? 42 : 96);
+  a.classList.add(size);
   return a;
 }
 
@@ -68,7 +71,12 @@ function render(host: HTMLElement): void {
     const nb = t('button', 'bb-round', '+') as HTMLButtonElement;
     nb.title = 'New bot';
     nb.addEventListener('click', () => editBot(null));
-    head.appendChild(nb);
+    const sk = t('button', 'bb-skills', 'Skills') as HTMLButtonElement;
+    sk.title = 'Skills library: import, add and edit skills';
+    sk.addEventListener('click', () => openSkillsLibrary());
+    const actions = el('span', 'bb-side-actions');
+    actions.append(sk, nb);
+    head.appendChild(actions);
     side.appendChild(head);
     const sbox = el('input', 'bb-search') as HTMLInputElement;
     sbox.placeholder = 'Search';
@@ -82,10 +90,7 @@ function render(host: HTMLElement): void {
     const bots = data.bots.filter((x) => !x.hidden && (!q || x.name.toLowerCase().includes(q) || x.title.toLowerCase().includes(q)));
     if (!data.bots.length) {
       const e = el('div', 'bb-side-empty');
-      e.append(t('div', 'bb-side-empty-title', 'No bots yet'), t('div', '', 'A bot is an AI with its own name, personality, model, folder and memory.'));
-      const b = t('button', 'primary', 'Create your first bot');
-      b.addEventListener('click', () => editBot(null));
-      e.appendChild(b);
+      e.append(t('div', 'bb-side-empty-title', 'No bots yet'), t('div', '', 'Your bots will show up here.'));
       list.appendChild(e);
     }
     for (const b of bots) {
@@ -152,7 +157,7 @@ function render(host: HTMLElement): void {
       ['Duplicate', () => void window.void.botsDuplicate(b.id).then(load)],
       ['Copy id', () => void navigator.clipboard.writeText(b.id)],
       [b.hidden ? 'Show' : 'Hide', () => void window.void.botsSave({ ...b, hidden: !b.hidden }).then(load)],
-      ['Delete…', () => { if (confirm(`Delete ${b.name}, its chats and memory? Its working folder is kept.`)) void window.void.botsDelete(b.id).then(() => { target = null; main.textContent = ''; return load(); }); }],
+      ['Delete…', () => { if (confirm(`Delete ${b.name}, its chats and memory? Its working folder is kept.`)) void window.void.botsDelete(b.id).then(() => load()).then(() => drawWelcome()); }],
     ]);
   }
 
@@ -162,6 +167,50 @@ function render(host: HTMLElement): void {
       ['Edit', () => r && editRoom(r)],
       ['Delete…', () => { if (confirm('Delete this room and its history?')) void window.void.roomsDelete(id).then(() => { target = null; main.textContent = ''; return load(); }); }],
     ]);
+  }
+
+  // ---------- welcome / first bot ----------
+  function drawWelcome(): void {
+    main.textContent = '';
+    target = null;
+    const w = el('div', 'bbh');
+    const faces = el('div', 'bbh-faces');
+    [[2, FACE_COLORS[3]], [1, FACE_COLORS[4]], [7, FACE_COLORS[0]], [5, FACE_COLORS[5]], [6, FACE_COLORS[2]]].forEach(([f, c], i) => {
+      const s = el('span', `bbh-face f${i}`);
+      s.innerHTML = faceSvg(f as number, c as string, i === 2 ? 92 : 64);
+      faces.appendChild(s);
+    });
+    const first = !data.bots.length;
+    w.append(
+      faces,
+      t('div', 'bbh-title', first ? 'Meet BlBots' : 'Make another bot'),
+      t('div', 'bbh-sub', first
+        ? 'AI teammates with their own name, personality, folder and memory. They code, research and write on this computer, and you can reach them from the CLI and your phone.'
+        : 'Start from one of these, or from scratch.'),
+    );
+    const grid = el('div', 'bbh-grid');
+    for (const tp of TEMPLATES) {
+      const c = el('button', 'bbh-card');
+      const av = el('span', 'bbh-card-face');
+      av.innerHTML = faceSvg(tp.bot.face ?? 1, tp.bot.color ?? FACE_COLORS[4], 46);
+      const tx = el('span', 'bbh-card-text');
+      tx.append(t('span', 'bbh-card-name', tp.label), t('span', 'bbh-card-sub', tp.blurb));
+      c.append(av, tx);
+      c.addEventListener('click', () => editBot(null, tp));
+      grid.appendChild(c);
+    }
+    const blank = el('button', 'bbh-card blank');
+    const plus = t('span', 'bbh-card-face plus', '+');
+    const bt = el('span', 'bbh-card-text');
+    bt.append(t('span', 'bbh-card-name', 'Start from scratch'), t('span', 'bbh-card-sub', 'Pick a face, a name and a personality.'));
+    blank.append(plus, bt);
+    blank.addEventListener('click', () => editBot(null));
+    grid.appendChild(blank);
+    w.appendChild(grid);
+    const foot = el('div', 'bbh-foot');
+    foot.append(t('span', '', 'Runs on BlazeAPI models, or on Claude Code, Codex or Grok with your own plan.'));
+    w.appendChild(foot);
+    main.appendChild(w);
   }
 
   // ---------- conversation view ----------
@@ -320,6 +369,20 @@ function render(host: HTMLElement): void {
         for (const m of mem) chips.appendChild(t('span', 'bb-mem-chip', m));
         w.appendChild(chips);
       }
+      const starters = el('div', 'bb-starters');
+      for (const s of b.mode === 'ask'
+        ? ['What can you help me with?', 'Explain how this project is put together', 'What should I learn next?']
+        : ['What can you do?', 'Look around this folder and tell me what it is', 'Find one thing worth improving and do it']) {
+        const c = t('button', 'bb-starter', s);
+        c.addEventListener('click', () => {
+          const ta = main.querySelector('.bb-pill textarea') as HTMLTextAreaElement | null;
+          if (!ta) return;
+          ta.value = s;
+          ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+        });
+        starters.appendChild(c);
+      }
+      w.appendChild(starters);
       msgs?.appendChild(w);
     }
   }
@@ -463,79 +526,21 @@ function render(host: HTMLElement): void {
     return s;
   }
 
-  function editBot(b: BotProfile | null): void {
-    const body = el('div', 'bb-form');
-    const name = input(b?.name ?? '', 'Nova');
-    const av = input(b?.avatar ?? '', '🤖');
-    av.maxLength = 4;
-    const color = el('input') as HTMLInputElement;
-    color.type = 'color';
-    color.value = /^#[0-9a-fA-F]{6}$/.test(b?.color ?? '') ? b!.color : '#3a3a3a';
-    const title = input(b?.title ?? '', 'Writes and fixes tests');
-    const soul = el('textarea') as HTMLTextAreaElement;
-    soul.rows = 6;
-    soul.value = b?.soul ?? '';
-    soul.placeholder = 'Who this bot is and how it works: tone, expertise, rules it always follows.';
-    const engineOf = (k: string): string => data.engines.find((e) => e.name === k)?.path ? '' : ' (not found on this computer)';
-    const engine = select([['blaze', 'BlazeAPI model'], ['claude', `Claude Code CLI${engineOf('claude')}`], ['codex', `Codex CLI${engineOf('codex')}`], ['grok', `Grok CLI${engineOf('grok')}`]], b?.engine.kind ?? 'blaze');
-    const model = input(b?.model ?? '', 'Default: your selected model');
-    const approval = select([['ask', 'Ask before changes and commands'], ['edits', 'Apply edits, ask before commands'], ['full', 'Full access (never asks)']], b?.approval ?? 'ask');
-    const mode = select([['agent', 'Agent (uses tools)'], ['ask', 'Talk only']], b?.mode === 'ask' ? 'ask' : 'agent');
-    const folder = input(b?.folder ?? '', 'Default: its own folder');
-    const computer = el('input') as HTMLInputElement;
-    computer.type = 'checkbox';
-    computer.checked = !!b?.computer;
-    const routines: BotRoutine[] = (b?.routines ?? []).map((r) => ({ ...r }));
-    const rBox = el('div', 'bb-routines');
-    const drawRoutines = (): void => {
-      rBox.textContent = '';
-      routines.forEach((r, i) => {
-        const row = el('div', 'bb-routine');
-        const rt = input(r.title, 'Morning report');
-        const rp = input(r.prompt, 'What to do each time');
-        const kind = select([['daily', 'Every day at'], ['weekdays', 'Weekdays at'], ['every', 'Every N hours'], ['cron', 'Cron']], r.schedule.kind === 'weekly' ? 'daily' : r.schedule.kind);
-        const val = input(r.schedule.kind === 'every' ? String(r.schedule.hours) : r.schedule.kind === 'cron' ? r.schedule.expr : ('time' in r.schedule ? r.schedule.time : '09:00'));
-        const on = el('input') as HTMLInputElement;
-        on.type = 'checkbox';
-        on.checked = r.enabled;
-        on.title = 'On';
-        const del = t('button', '', '✕');
-        const sync = (): void => {
-          r.title = rt.value; r.prompt = rp.value; r.enabled = on.checked;
-          const k = kind.value;
-          r.schedule = k === 'every' ? { kind: 'every', hours: Number(val.value) || 1 } : k === 'cron' ? { kind: 'cron', expr: val.value } : { kind: k as 'daily' | 'weekdays', time: val.value };
-        };
-        [rt, rp, kind, val, on].forEach((x) => x.addEventListener('change', sync));
-        del.addEventListener('click', () => { routines.splice(i, 1); drawRoutines(); });
-        row.append(on, rt, kind, val, del, rp);
-        rBox.appendChild(row);
-      });
-      const add = t('button', '', 'Add routine');
-      add.addEventListener('click', () => { routines.push({ id: `t${Math.random().toString(36).slice(2, 10)}`, title: '', prompt: '', schedule: { kind: 'daily', time: '09:00' }, enabled: true, catchUp: false, lastRun: 0, thread: null }); drawRoutines(); });
-      rBox.appendChild(add);
-    };
-    drawRoutines();
-    body.append(
-      field('Name', name), field('Avatar', av, 'One emoji or letter'), field('Colour', color), field('Subtitle', title),
-      field('Personality and instructions', soul, 'Sent with every message (up to 24 KB).'),
-      field('Runs on', engine, 'Claude Code / Codex / Grok use the CLI installed on this computer and your own subscription.'),
-      field('Model', model), field('What it may do', approval), field('Mode', mode),
-      field('Working folder', folder, 'Its tools can only touch this folder.'),
-      field('Private computer', computer, 'A Linux desktop in Docker it can see and use (needs Docker; about 4 GB RAM while running).'),
-      field('Routines', rBox, 'Run while Blaze IDE (or `blaze serve`) is running.'),
-    );
-    dialog(b ? `Edit ${b.name}` : 'New bot', body, async () => {
-      const k = engine.value;
-      const profile: BotProfile = {
-        ...(b ?? { id: `b${Math.random().toString(36).slice(2, 12)}`, checkBacks: [], pinned: false, hidden: false, created: Math.floor(Date.now() / 1000) }),
-        name: name.value.trim(), avatar: av.value.trim() || name.value.trim().slice(0, 1).toUpperCase(), color: color.value, title: title.value.trim(), soul: soul.value,
-        engine: k === 'blaze' ? { kind: 'blaze' } : { kind: k as 'claude' | 'codex' | 'grok', bin: null },
-        model: model.value.trim(), approval: approval.value as BotProfile['approval'], mode: mode.value, folder: folder.value.trim(), computer: computer.checked, routines,
-      } as BotProfile;
-      const saved = await window.void.botsSave(profile);
-      await load();
-      await openBot(saved.id, null);
+  function editBot(b: BotProfile | null, template?: Template): void {
+    const open = (memory: string): void => openBotEditor({
+      bot: b,
+      template,
+      engines: data.engines,
+      memory,
+      onSave: async (p, mem) => {
+        const saved = await window.void.botsSave(p);
+        if (mem !== null) await window.void.botsSetMemory(saved.id, mem);
+        await load();
+        await openBot(saved.id, null);
+      },
     });
+    if (b) void window.void.botsThreads(b.id).then((i) => open(i.memory), () => open(''));
+    else open('');
   }
 
   function editRoom(r: BotsOverview['rooms'][number] | null): void {
@@ -568,6 +573,6 @@ function render(host: HTMLElement): void {
   }
 
   void load().then(() => {
-    if (!data.bots.length) editBot(null);
+    if (!target) drawWelcome();
   });
 }

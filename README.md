@@ -9,6 +9,14 @@ A fast, agentic code editor powered by [BlazeAPI](https://blazeapi.org). One cod
 - **Continue on mobile**: open your chats on your phone, send messages and approve the agent's actions while away. Password sign-in (or a one-time QR), reachable over Wi-Fi, your own domain, a free Cloudflare quick tunnel, or the BlazeAPI relay.
 - **BlBots**: a roster of AI bots, each with its own personality, model, folder, memory and routines; rooms where bots work together; bots on BlazeAPI models or on your own Claude Code / Codex / Grok CLI; an optional private Linux desktop per bot (Docker). In the IDE, the CLI and on your phone.
 
+## Skills
+
+A skill is a folder with a `SKILL.md` (`name` + `description`, then instructions), the format Claude Code, Codex and OpenCode use. The library lives in the app's config folder and is shared by the IDE, the `blaze` CLI, phone chats and BlBots.
+
+- IDE: **Skills** in the BlBots sidebar, Settings > Skills, or "Skills Library" in the command palette. Import from this computer or a folder, add starters, write your own; each bot picks its skills in its **Skills** section.
+- CLI: `blaze skills found | import <name…> | import --all | add <folder> | starter [name] | list | chat <name> on|off | remove <name>`.
+- The model gets one line per skill and opens one with `use_skill`. Importing copies files (not links inside a skill, dot files or key files). Skills are instructions the AI follows: import ones you trust.
+
 ## Layout
 
 | Path | What |

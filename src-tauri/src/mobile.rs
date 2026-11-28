@@ -72,6 +72,9 @@ impl Host for IdeHost {
         let effort = str_of("reasoningEffort");
         c.reasoning_effort = Some(if effort.is_empty() { "medium".into() } else { effort });
         c.extra_system = Some("This turn was sent from the user's phone (Continue on mobile). There is no editor or preview browser for this turn; keep replies short enough to read on a phone.".into());
+        if let Ok(dir) = self.app.path().app_config_dir() {
+            blaze_core::skills::tool::for_chat(&mut c, &dir);
+        }
         c
     }
     fn projects(&self) -> Vec<PathBuf> {

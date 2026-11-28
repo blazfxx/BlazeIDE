@@ -53,7 +53,7 @@ pub trait Host: Send + Sync + 'static {
     fn projects(&self) -> Vec<PathBuf>;
     fn models(&self) -> Vec<ModelEntry>;
     fn default_model(&self) -> String;
-    /// "Blaze IDE on Muhammads-MacBook-Air".
+    /// "Blaze IDE on Alexs-MacBook-Air".
     fn label(&self) -> String;
     /// BlBots, when this host runs them.
     fn bots(&self) -> Option<crate::bots::runner::BotCtx> {

@@ -19,6 +19,7 @@ pub mod models;
 pub mod paths;
 pub mod presence;
 pub mod secret_file;
+pub mod skills;
 pub mod prompts;
 pub mod providers;
 pub mod remote;

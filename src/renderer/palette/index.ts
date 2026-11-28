@@ -1,6 +1,7 @@
 // Command palette: fuzzy file search (Cmd+P) and command list (Cmd+K).
 // '>' prefix switches files mode to commands; removing it switches back.
 
+import { openSkillsLibrary } from '../skills/library';
 import type { FileNode } from '../../shared/types';
 import { bus, el, escapeHtml, state } from '../state';
 import { iconSearch } from '../icons/index';
@@ -60,6 +61,8 @@ function commandEntries(): Entry[] {
       });
     }),
     e('Open Settings', () => bus.emit('open-settings', undefined)),
+    e('Skills Library', () => openSkillsLibrary()),
+    e('Skills: Import from Claude Code, Codex, OpenCode', () => openSkillsLibrary({ tab: 'import' })),
     e('Open Web Preview', () => bus.emit('open-preview', {})),
     e('Account', () => bus.emit('open-account', undefined)),
     e('Save', () => void editorRef?.saveActive()),

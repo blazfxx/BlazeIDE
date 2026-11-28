@@ -10,13 +10,14 @@ const COMMANDS: &[&str] = &[
     "term_create", "term_write", "term_resize", "term_kill",
     "ai_send", "ai_cancel", "ai_get_models", "ai_refresh_models", "ai_run_tool", "ai_generate_media", "ai_image_suppliers", "ai_complete",
     "providers_list", "providers_save", "providers_delete", "providers_fetch_models",
-    "ext_search", "ext_details", "ext_icon_theme", "ext_install", "ext_uninstall", "ext_list", "ext_contributions",
+    "ext_search", "ext_details", "ext_icon_theme", "bots_avatar_image", "ext_install", "ext_uninstall", "ext_list", "ext_contributions",
     "chat_list", "chat_load", "chat_save", "chat_delete",
     "settings_get", "settings_set",
     "open_external", "pick_media",
     "win_new", "win_open_file",
     "cli_status", "cli_install", "presence_set",
     "bots_list", "bots_save", "bots_delete", "bots_duplicate", "bots_threads", "bots_thread", "bots_set_memory", "bots_send", "bots_cancel", "bots_answer", "rooms_save", "rooms_delete", "rooms_get", "rooms_send", "bots_computer",
+    "skills_list", "skills_get", "skills_save", "skills_remove", "skills_set_chat", "skills_starters", "skills_add_starter", "skills_discover", "skills_pick_folder", "skills_import", "skills_use",
     "mobile_status", "mobile_set_password", "mobile_configure", "mobile_set_tunnel_token", "mobile_pair_qr", "mobile_revoke",
 ];
 

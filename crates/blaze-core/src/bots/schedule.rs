@@ -200,7 +200,9 @@ mod tests {
     use jiff::civil::date;
 
     fn z(y: i16, mo: i8, d: i8, h: i8, mi: i8) -> Zoned {
-        date(y, mo, d).at(h, mi, 0, 0).to_zoned(TimeZone::UTC).unwrap()
+        // Local time, like is_due (it uses the system zone): UTC here only
+        // passed on UTC machines.
+        date(y, mo, d).at(h, mi, 0, 0).to_zoned(TimeZone::system()).unwrap()
     }
 
     #[test]

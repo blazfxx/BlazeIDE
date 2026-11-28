@@ -204,6 +204,24 @@ fn is_edit_model(id: &str) -> bool {
 
 /// Image models to try, in order: the chosen one first (if the account has
 /// it), then the automatic order, then any other text-to-image model.
+/// A picture file as a data: URL (type from its first bytes; PNG, JPEG,
+/// WebP or GIF only).
+pub fn image_data_url(bytes: &[u8]) -> Option<String> {
+    use base64::Engine;
+    let mime = if bytes.starts_with(b"\x89PNG") {
+        "image/png"
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        "image/jpeg"
+    } else if bytes.len() > 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        "image/webp"
+    } else if bytes.starts_with(b"GIF8") {
+        "image/gif"
+    } else {
+        return None;
+    };
+    Some(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
+}
+
 pub fn image_candidates(models: &[ModelEntry], wanted: &str) -> Vec<String> {
     let usable = |id: &str| models.iter().any(|m| m.id == id && m.kind == "image") && !is_edit_model(id);
     let mut out: Vec<String> = Vec::new();
