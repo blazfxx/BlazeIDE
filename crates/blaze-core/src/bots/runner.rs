@@ -52,6 +52,9 @@ impl BotCtx {
         cfg.extra_tools = Some(Arc::new(BotTools { bots: self.bots.clone(), bot_id: bot.id.clone(), thread_id: thread, hand_off, computer }));
         if bot.engine == Engine::Blaze {
             crate::skills::tool::for_bot(&mut cfg, &self.config_dir, &bot.skills);
+            if bot.web {
+                crate::web::tool::attach(&mut cfg, &format!("bot-{}", bot.id));
+            }
         } else if let Some(list) = engine_skills(&self.config_dir, &bot.skills) {
             // A local CLI has its own file tools, not use_skill.
             let sys = cfg.extra_system.take().unwrap_or_default();

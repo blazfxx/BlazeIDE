@@ -215,7 +215,38 @@
   }
 
   // ---------- chats ----------
-  async function showChats() {
+  // What the list or chat on screen was drawn from, to redraw only on change.
+  function listKey(chats) { return (chats || []).map(function (c) { return [c.id, c.updatedAt, c.messages, c.working].join(); }).join(';'); }
+  function chatKey(d) { return [d.messages.length, d.live, d.runId || '', JSON.stringify(d.messages[d.messages.length - 1] || '').length].join(); }
+
+  // Chats worked on in Blaze IDE do not send events: look again every few seconds.
+  setInterval(async function () {
+    if (document.hidden || !S.signedIn || S.refreshing) return;
+    S.refreshing = true;
+    try {
+      if (S.view === 'chats') {
+        const root = S.root;
+        const d = await api('api/chats?root=' + encodeURIComponent(root));
+        if (S.view === 'chats' && S.root === root && listKey(d.chats) !== S.listKey) showChats(d.chats);
+      } else if (S.view === 'chat' && S.chat && S.chat.id && !S.chat.runId && (!S.target || S.target.kind === 'project')) {
+        const chat = S.chat;
+        const d = await api('api/chat?root=' + encodeURIComponent(S.root) + '&id=' + encodeURIComponent(chat.id));
+        if (S.chat === chat && !chat.runId && chatKey(d) !== chat.key) {
+          const stick = nearBottom();
+          const top = scroller ? scroller.scrollTop : 0;
+          const draft = composer ? composer.input.value : '';
+          Object.assign(chat, { title: d.title, messages: d.messages, runId: d.runId || null, live: !!d.live, key: chatKey(d) });
+          S.pending = d.pending || [];
+          renderChat();
+          composer.input.value = draft;
+          if (!stick) scroller.scrollTop = top;
+        }
+      }
+    } catch (_) { /* try again next time */ }
+    S.refreshing = false;
+  }, 3000);
+
+  async function showChats(known) {
     S.view = 'chats';
     S.chat = null;
     S.target = { kind: 'project', root: S.root };
@@ -227,8 +258,8 @@
     const list = h('div', 'list');
     v.body.appendChild(list);
     try {
-      const d = await api('api/chats?root=' + encodeURIComponent(S.root));
-      S.chats = d.chats || [];
+      S.chats = Array.isArray(known) ? known : (await api('api/chats?root=' + encodeURIComponent(S.root))).chats || [];
+      S.listKey = listKey(S.chats);
     } catch (x) { list.appendChild(h('div', 'error', x.message)); return; }
     if (!S.chats.length) list.appendChild(h('div', 'empty', 'No chats in this project yet. Start one.'));
     S.chats.forEach(function (c) {
@@ -253,7 +284,7 @@
           : T.kind === 'room' ? 'api/room?id=' + encodeURIComponent(T.room)
           : 'api/chat?root=' + encodeURIComponent(S.root) + '&id=' + encodeURIComponent(id);
         const d = await api(url);
-        S.chat = { id: d.id, title: d.title, messages: d.messages, runId: d.runId || null };
+        S.chat = { id: d.id, title: d.title, messages: d.messages, runId: d.runId || null, live: !!d.live, key: chatKey(d) };
         S.members = {};
         (d.members || []).forEach(function (b) { S.members[b.id] = b.name; });
         S.model = d.model || S.model;
@@ -275,7 +306,7 @@
   }
 
   function renderChat() {
-    const v = screen(S.chat.title || 'New chat', S.chat.runId ? 'working…' : '', back);
+    const v = screen(S.chat.title || 'New chat', S.chat.runId ? 'working…' : S.chat.live ? 'working in Blaze IDE…' : '', back);
     scroller = v.body;
     msgsBox = h('div', 'msgs');
     v.body.appendChild(msgsBox);
@@ -287,6 +318,12 @@
     composer = buildComposer();
     v.s.appendChild(composer.el);
     setWorking(!!S.chat.runId);
+    if (S.chat.live && !S.chat.runId) {
+      // The IDE has the chat: show progress, send when it is done.
+      workingRow.classList.remove('hidden');
+      composer.send.disabled = true;
+      composer.input.placeholder = 'Blaze IDE is working on this…';
+    }
     toBottom();
   }
 
@@ -422,12 +459,13 @@
     });
     bar.append(ta, send);
     el.append(opts, bar);
-    return { el: el, send: send };
+    return { el: el, send: send, input: ta };
   }
 
   // ---------- live events (long poll) ----------
   function onEvent(e) {
     if (S.view === 'chats' && (e.type === 'run_start' || e.type === 'run_end')) { showChats(); return; }
+
     if (S.view === 'bot' && e.type === 'run_end' && S.target) { showBot(S.target.bot); return; }
     if (S.view !== 'chat' || !S.chat) return;
     const mine = e.chatId === S.chat.id || (e.item && e.item.chatId === S.chat.id);

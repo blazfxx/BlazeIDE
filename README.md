@@ -17,6 +17,25 @@ A skill is a folder with a `SKILL.md` (`name` + `description`, then instructions
 - CLI: `blaze skills found | import <name…> | import --all | add <folder> | starter [name] | list | chat <name> on|off | remove <name>`.
 - The model gets one line per skill and opens one with `use_skill`. Importing copies files (not links inside a skill, dot files or key files). Skills are instructions the AI follows: import ones you trust.
 
+## Web access
+
+The IDE chat, `blaze`, phone chats and BlBots can `web_search`, `web_fetch` (page as text), `web_browser` (the installed Chrome, Edge, Brave or Chromium, headless, with a throw-away profile) and `web_interact` (click and type; never into password or card fields). Switch: Settings > AI > Web access, and per bot under Access.
+
+- Only public http(s) addresses: checked on the resolved IP, on every redirect, and for everything the browser loads (its traffic goes through a local filtering proxy). Local dev servers are what the Preview `browser` tool is for.
+- Page content reaches the model marked as untrusted. That lowers, but does not remove, the risk of a page talking the model into something (prompt injection), including leaking data through an address.
+- Search uses DuckDuckGo's HTML page (through the browser if it asks for a bot check), then Bing. No API key; engines can rate-limit.
+
+## Approvals
+
+| Level | Runs without asking |
+|---|---|
+| Ask | reading files and web search |
+| Edits | + file edits, reading web pages |
+| Auto | everything except destructive actions (`crates/blaze-core/src/risk.rs`: deleting, git history rewrites, system and permission changes, writing outside the project, removing software or cloud resources, database deletion, publishing, commands that cannot be read, consequential clicks on websites) |
+| YOLO | everything |
+
+Auto reads the command line. It guards against mistakes; it is not a sandbox: a script the command runs can do anything. CLI: `-a ask|edits|auto|yolo` or `/approval`.
+
 ## Layout
 
 | Path | What |

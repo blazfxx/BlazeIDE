@@ -352,7 +352,7 @@ function render(host: HTMLElement): void {
       });
       actions.push(comp);
     }
-    frame(b.name, `${b.title ? b.title + ' · ' : ''}${b.approval === 'full' ? 'Full access' : b.approval === 'edits' ? 'Approves edits' : 'Asks first'}`, actions, avatar(b, 'sm'));
+    frame(b.name, `${b.title ? b.title + ' · ' : ''}${b.approval === 'full' ? 'YOLO' : b.approval === 'auto' ? 'Auto' : b.approval === 'edits' ? 'Approves edits' : 'Asks first'}`, actions, avatar(b, 'sm'));
     if (thread) {
       chatId = thread;
       const th = await window.void.botsThread(id, thread);

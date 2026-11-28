@@ -253,7 +253,7 @@ fn onboarding(f: &mut Frame, app: &App, step: Onboard) {
             l.push(title_line("What may the agent do without asking?"));
             l.push(Line::from(Span::styled("Change it any time with /approval.", dim())));
             l.push(Line::default());
-            let opts = [("Ask first", "every change and command waits for your y/n"), ("Approve edits", "edits files here, asks before commands (recommended)"), ("Full access", "never asks; use only in projects you can restore")];
+            let opts = [("Ask first", "every change and command waits for your y/n"), ("Approve edits", "edits files here, asks before commands (recommended)"), ("Auto", "runs everything, asks before destructive commands"), ("YOLO", "never asks; use only in projects you can restore")];
             for (i, (name, d)) in opts.iter().enumerate() {
                 let sel = i == app.onboard_sel;
                 l.push(Line::from(vec![

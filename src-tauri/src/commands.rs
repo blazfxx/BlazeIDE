@@ -459,6 +459,16 @@ pub async fn ai_send(app: AppHandle, window: WebviewWindow, state: State<'_, App
         }
     }
 
+    // The web tools, for agent and plan turns.
+    if matches!(req.mode.as_str(), "agent" | "plan") && crate::web::enabled(&state) {
+        let note = blaze_core::web::tool::NOTE;
+        req.extra_system = Some(match req.extra_system.take() {
+            Some(s) => format!("{s}\n\n{note}"),
+            None => note.to_string(),
+        });
+        req.extra_tools.extend(blaze_core::web::tool::schemas(&req.mode));
+    }
+
     let route = match route_for(&state, &req.model) {
         Ok(r) => r,
         Err(m) => {

@@ -362,7 +362,9 @@ impl App {
     fn on_host(&mut self, req: HostRequest) {
         match req {
             HostRequest::Approve { call, summary, reply } => {
-                if self.always.contains(&call.name) {
+                // "Always" never covers what Auto asks about as destructive.
+                let risky = self.approval == Approval::Auto && blaze_core::agent::risk_of(&call).is_some();
+                if self.always.contains(&call.name) && !risky {
                     let _ = reply.send(true);
                 } else {
                     self.pending = Some(Pending::Approve { summary, tool: call.name, reply });
@@ -689,7 +691,7 @@ impl App {
                     self.s.set_setting("cliApproval", serde_json::json!(approval_key(a)));
                     self.status = format!("Approval: {}", a.label());
                 }
-                None => self.err("Use /approval ask, edits or full."),
+                None => self.err("Use /approval ask, edits, auto or yolo."),
             },
             "bots" => self.open_picker(PickKind::Bots),
             "undo" => self.undo(),
@@ -1280,9 +1282,9 @@ impl App {
             }
             Onboard::Approval => match k.code {
                 KeyCode::Up => self.onboard_sel = self.onboard_sel.saturating_sub(1),
-                KeyCode::Down => self.onboard_sel = (self.onboard_sel + 1).min(2),
+                KeyCode::Down => self.onboard_sel = (self.onboard_sel + 1).min(3),
                 KeyCode::Enter => {
-                    let a = [Approval::Ask, Approval::Edits, Approval::Full][self.onboard_sel.min(2)];
+                    let a = [Approval::Ask, Approval::Edits, Approval::Auto, Approval::Full][self.onboard_sel.min(3)];
                     self.approval = a;
                     self.s.set_setting("cliApproval", serde_json::json!(approval_key(a)));
                     self.finish_onboard();
@@ -1340,6 +1342,7 @@ pub fn approval_key(a: Approval) -> &'static str {
     match a {
         Approval::Ask => "ask",
         Approval::Edits => "edits",
+        Approval::Auto => "auto",
         Approval::Full => "full",
     }
 }

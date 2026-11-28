@@ -103,11 +103,30 @@ export async function persistChat(chat: StoredChat): Promise<boolean> {
   const root = state.projectRoot;
   if (!root || chat.messages.length === 0) return false;
   try {
-    await window.void.chatSave(root, chat);
+    await window.void.chatSave(root, withinSize(chat));
     return true;
   } catch {
     return false; // never let a save failure break the conversation
   }
+}
+
+/** Screenshots are large, and a chat file has a size limit: a long browsing
+ *  run keeps only its newest ones. */
+export function withinSize(chat: StoredChat, limit = 6_000_000): StoredChat {
+  const size = (m: ChatMessage[]): number => m.reduce((n, x) => n + (x.content?.length ?? 0) + (x.images ?? []).reduce((a, i) => a + i.length, 0), 0);
+  if (size(chat.messages) <= limit) return chat;
+  let messages = chat.messages;
+  for (const keep of [3, 1, 0]) {
+    const withImages = messages.map((m, i) => (m.images?.length ? i : -1)).filter((i) => i >= 0);
+    const drop = new Set(withImages.slice(0, Math.max(0, withImages.length - keep)));
+    messages = messages.map((m, i) => {
+      if (!drop.has(i)) return m;
+      const { images: _images, ...rest } = m;
+      return rest;
+    });
+    if (size(messages) <= limit) break;
+  }
+  return { ...chat, messages };
 }
 
 /** Build the instruction that asks the model to summarize the conversation so

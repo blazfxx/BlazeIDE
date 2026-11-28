@@ -218,7 +218,7 @@ pub async fn run(s: &mut Session, cmd: BotsCmd) -> Result<(), String> {
             if let Some(f) = folder {
                 b.folder = blaze_core::agent::project_root(&f).map_err(|e| e.to_string())?.display().to_string();
             }
-            b.approval = approval.as_deref().map(|a| Approval::parse(a).ok_or("approval must be ask, edits or full")).transpose()?.unwrap_or(Approval::Ask);
+            b.approval = approval.as_deref().map(|a| Approval::parse(a).ok_or("approval must be ask, edits, auto or yolo")).transpose()?.unwrap_or(Approval::Ask);
             b.computer = computer;
             let b = c.bots.save(b).map_err(|e| e.to_string())?;
             println!("Created {} ({}). Talk to it: blaze bots chat {}", b.name, b.engine.label(), b.name);

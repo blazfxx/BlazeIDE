@@ -116,6 +116,10 @@ export type AgentToolName =
   | 'browser'
   | 'write_plan'
   | 'use_skill'
+  | 'web_search'
+  | 'web_fetch'
+  | 'web_browser'
+  | 'web_interact'
   | 'ask_question';
 
 export interface AIRequest {
@@ -159,6 +163,9 @@ export interface StoredChat {
   /** Per user message: the files the agent changed after it, with their earlier
    *  content (null = the file did not exist), so the chat can be reverted. */
   checkpoints?: Checkpoint[];
+  /** Set while this IDE's agent works on the chat (ms), so a phone shows it
+   *  as busy. Missing once it is done. */
+  live?: number;
 }
 
 export interface Checkpoint {
@@ -205,7 +212,14 @@ export interface AppSettings {
   editorAutosave: boolean;
   editorWordWrap: boolean;
   terminalFontSize: number;
+  /** Old "approve everything" switch; read only until aiApproval is set. */
   aiAutoApprove: boolean;
+  /** What the chat agent may do without asking ('' = not chosen yet). */
+  aiApproval?: ApprovalLevel | '';
+  /** Web search and browsing for the AI chat, CLI and phone chats. */
+  webAccess?: boolean;
+  /** What turns sent from a phone may do without asking. */
+  mobileApproval?: ApprovalLevel | '';
   /** Allow the AI to generate images (the generate_image tool). Off = that tool
    *  isn't offered, so no image generation happens. */
   aiMediaGen: boolean;
@@ -334,6 +348,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   editorWordWrap: false,
   terminalFontSize: 13,
   aiAutoApprove: false,
+  aiApproval: '',
+  webAccess: true,
   aiMediaGen: false,
   imageModel: '',
   imageSupplier: '',
@@ -460,3 +476,5 @@ export interface ExtContributions {
   themes: Array<{ extId: string; label: string; base: string; json: Record<string, unknown> }>;
   snippets: Array<{ extId: string; language: string; json: Record<string, unknown> }>;
 }
+
+export type ApprovalLevel = 'ask' | 'edits' | 'auto' | 'full';

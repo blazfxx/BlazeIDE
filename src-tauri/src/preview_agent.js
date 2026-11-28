@@ -30,6 +30,23 @@
     push('error', ['Unhandled promise rejection: ' + ((e.reason && e.reason.message) || e.reason)]);
   });
 
+  // Tell the IDE where the page is, so its address bar and Back/Forward follow
+  // links and single-page-app navigation.
+  var lastHref = '';
+  function where() {
+    if (location.href === lastHref) return;
+    lastHref = location.href;
+    try { parent.postMessage({ type: 'void:location', url: location.href }, '*'); } catch (e) { /* ignore */ }
+  }
+  ['pushState', 'replaceState'].forEach(function (name) {
+    var orig = history[name];
+    history[name] = function () { var r = orig.apply(this, arguments); setTimeout(where, 0); return r; };
+  });
+  window.addEventListener('popstate', where);
+  window.addEventListener('hashchange', where);
+  window.addEventListener('pageshow', function () { lastHref = ''; where(); });
+  document.addEventListener('DOMContentLoaded', where);
+
   function reply(id, ok, data) { try { parent.postMessage({ type: 'void:agent-result', id: id, ok: ok, data: data }, '*'); } catch (e) { /* ignore */ } }
   function bg() {
     var c = getComputedStyle(document.body || document.documentElement).backgroundColor;
@@ -42,6 +59,8 @@
     if (!d || d.type !== 'void:agent' || ev.source !== parent) return;
     var id = d.id;
     try {
+      if (d.op === 'back') { history.back(); return; }
+      if (d.op === 'forward') { history.forward(); return; }
       if (d.op === 'console') {
         return reply(id, true, { logs: logs.slice(-60), title: document.title, url: location.href, errors: logs.filter(function (l) { return l.indexOf('[error]') === 0; }).length });
       }

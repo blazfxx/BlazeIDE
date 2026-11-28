@@ -158,6 +158,9 @@ pub struct Bot {
     /// A private Linux desktop for this bot (Docker), see `computer`.
     #[serde(default)]
     pub computer: bool,
+    /// May search and browse the web (see `crate::web`).
+    #[serde(default = "yes")]
+    pub web: bool,
     /// Skills from the library this bot has (see `crate::skills`).
     #[serde(default)]
     pub skills: Vec<String>,
@@ -209,6 +212,7 @@ impl Bot {
             hidden: false,
             created: now_secs(),
             computer: false,
+            web: true,
             skills: Vec::new(),
         }
     }

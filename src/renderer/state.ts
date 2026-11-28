@@ -37,6 +37,7 @@ export interface BusEvents {
   /** A saved chat was created/updated/deleted — history list should refresh. */
   'ai-chats-changed': void;
   'ai-mode-changed': { mode: AIMode };
+  'ai-approval-changed': undefined;
   'git-branch-changed': { branch: string | null };
   'toggle-sidebar': void;
   'sidebar-search': void;

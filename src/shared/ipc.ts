@@ -162,6 +162,9 @@ export interface VoidAPI {
   botsCancel(runId: string): Promise<void>;
   botsAnswer(id: string, allow: boolean | null, answers: string[] | null): Promise<void>;
   botsComputer(bot: string): Promise<string>;
+  webTool(name: string, args: string): Promise<{ text: string; images: string[] }>;
+  /** Why Auto asks about a call, or null. */
+  approvalRisk(name: string, args: string): Promise<string | null>;
   skillsList(): Promise<SkillInfo[]>;
   skillsGet(name: string): Promise<{ text: string; files: string[]; folder: string | null }>;
   skillsSave(old: string | null, text: string): Promise<string>;
@@ -232,6 +235,8 @@ export interface FoundSkill { name: string; description: string; source: string;
 
 export interface BotProfile {
   id: string; name: string; avatar: string; color: string; title: string; soul: string;
+  /** May search and browse the web (missing = yes). */
+  web?: boolean;
   /** Names of library skills this bot has. */
   skills?: string[];
   /** Drawn face 1..8 (0 or missing = show `avatar`). */
@@ -239,7 +244,7 @@ export interface BotProfile {
   /** Avatar body shape, frame, eye colour and an optional picture (data URL). */
   body?: string; frame?: string; features?: string; image?: string;
   engine: { kind: 'blaze' } | { kind: 'claude' | 'codex' | 'grok'; bin: string | null };
-  model: string; approval: 'ask' | 'edits' | 'full'; folder: string; mode: string;
+  model: string; approval: 'ask' | 'edits' | 'auto' | 'full'; folder: string; mode: string;
   routines: BotRoutine[]; checkBacks: Array<{ id: string; at: number; thread: string; note: string }>;
   pinned: boolean; hidden: boolean; created: number; computer: boolean;
   /** Latest chat, for list previews (filled by botsList). */

@@ -12,7 +12,8 @@ import { bus, state } from '../state';
 import type { EditorArea } from '../editor/index';
 import type { ChatView } from './chat';
 import type { RunChanges } from './runChanges';
-import { createToolCard } from './agentView';
+import { createToolCard, type ToolCard } from './agentView';
+import { approvalLevel, mustAsk } from './approval';
 import { agentBrowser } from '../preview/index';
 
 /** Show the AI's question(s) in the input area and wait for the user's answers,
@@ -142,10 +143,11 @@ async function execWritePlan(call: ToolCall, deps: ToolExecDeps): Promise<string
   // Chat gets only the SHORT summary + an Implement action.
   deps.view.mountPlan(title || 'Plan', summary || 'Plan ready — open the file for the full details.', () => bus.emit('build-plan', { path: rel }));
 
-  if (state.settings.aiAutoApprove) {
+  const build = approvalLevel() === 'full';
+  if (build) {
     bus.emit('build-plan', { path: rel });
   }
-  return `Plan saved to ${rel} (opened in the editor) and summarized for the user. ${state.settings.aiAutoApprove ? 'Auto-building now.' : 'Waiting for the user to implement it.'}`;
+  return `Plan saved to ${rel} (opened in the editor) and summarized for the user. ${build ? 'Auto-building now.' : 'Waiting for the user to implement it.'}`;
 }
 
 /** Write a file to disk, update it in the editor if open, and open it so the
@@ -182,6 +184,36 @@ async function execGenerateVideo(call: ToolCall, deps: ToolExecDeps): Promise<st
   return result;
 }
 
+/** The card of a call, with Approve / Reject when the level asks for it.
+ *  Resolves null (and marks the card) when the user rejects. */
+async function approvedCard(call: ToolCall, deps: ToolExecDeps): Promise<ToolCard | null> {
+  const { ask, why } = await mustAsk(call);
+  const card = createToolCard(call, { gated: ask, why });
+  deps.view.mount(card.element);
+  if (!(await card.approval)) {
+    card.setRejected();
+    return null;
+  }
+  card.setRunning();
+  return card;
+}
+
+async function execWeb(call: ToolCall, deps: ToolExecDeps): Promise<string> {
+  const card = await approvedCard(call, deps);
+  if (!card) return 'User rejected this action.';
+  const r = await window.void.webTool(call.name, call.arguments).catch((e: unknown) => ({ text: `Error: ${String(e)}`, images: [] as string[] }));
+  card.setResult(r.text, r.text.startsWith('Error:'));
+  for (const url of r.images) {
+    const img = document.createElement('img');
+    img.className = 'agent-shot';
+    img.src = url;
+    img.alt = 'Web page screenshot';
+    deps.view.mount(img);
+    deps.shots?.push({ label: 'a web page', url });
+  }
+  return r.text;
+}
+
 /** Execute one tool call and return the tool-result string for the conversation. */
 export async function execToolCall(call: ToolCall, deps: ToolExecDeps): Promise<string> {
   // ask_question: pause and let the user answer in the input area.
@@ -191,12 +223,20 @@ export async function execToolCall(call: ToolCall, deps: ToolExecDeps): Promise<
 
   // Image generation: produced by the backend and written to the project by
   // the main process.
-  if (call.name === 'generate_image') {
-    return execGenerateMedia(call, deps);
+  if (call.name === 'generate_image' || call.name === 'generate_video') {
+    // These cost money: at the Ask level they wait for an OK.
+    if ((await mustAsk(call)).ask) {
+      const gate = createToolCard(call, { gated: true });
+      deps.view.mount(gate.element);
+      const ok = await gate.approval;
+      if (!ok) { gate.setRejected(); return 'User rejected this action.'; }
+      gate.element.remove();
+    }
+    return call.name === 'generate_image' ? execGenerateMedia(call, deps) : execGenerateVideo(call, deps);
   }
 
-  if (call.name === 'generate_video') {
-    return execGenerateVideo(call, deps);
+  if (call.name.startsWith('web_')) {
+    return execWeb(call, deps);
   }
 
   // Reading one of the user's own skills never asks.
@@ -234,15 +274,8 @@ export async function execToolCall(call: ToolCall, deps: ToolExecDeps): Promise<
   }
 
   if (!MUTATING.has(call.name)) {
-    const gated = call.name === 'run_command';
-    const card = createToolCard(call, { gated });
-    deps.view.mount(card.element);
-    const approved = await card.approval;
-    if (!approved) {
-      card.setRejected();
-      return 'User rejected this action.';
-    }
-    card.setRunning();
+    const card = await approvedCard(call, deps);
+    if (!card) return 'User rejected this action.';
     const result = await window.void.aiRunTool(call.name, call.arguments, state.projectRoot ?? '');
     card.setResult(result, result.startsWith('Error:'));
     return result;
@@ -293,11 +326,11 @@ export async function execToolCall(call: ToolCall, deps: ToolExecDeps): Promise<
   }
 
   // How the write gets applied:
-  //  - Agent mode (or auto-approve on): apply directly and keep moving. Blocking
-  //    on a per-file diff would stall a multi-file build mid-loop.
-  //  - Edit mode: show the diff and wait for Accept/Reject (deliberate change).
+  //  - Edits, Auto and YOLO: apply directly and keep moving (every change can
+  //    be reverted from the chat).
+  //  - Ask: show the diff and wait for Accept/Reject.
   let accepted: boolean;
-  if (state.settings.aiMode === 'agent' || state.settings.aiAutoApprove) {
+  if (approvalLevel() !== 'ask') {
     await applyEdit(deps.editor, abs, modified);
     accepted = true;
   } else {

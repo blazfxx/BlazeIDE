@@ -69,9 +69,9 @@ impl ExtraTools for SkillTools {
     fn handles(&self, name: &str) -> bool {
         name == NAME || self.inner.as_ref().is_some_and(|i| i.handles(name))
     }
-    fn needs_approval(&self, level: Approval, name: &str) -> bool {
+    fn needs_approval(&self, level: Approval, call: &ToolCall) -> bool {
         // Reading a skill the user added never asks.
-        name != NAME && self.inner.as_ref().is_some_and(|i| i.needs_approval(level, name))
+        call.name != NAME && self.inner.as_ref().is_some_and(|i| i.needs_approval(level, call))
     }
     fn run<'a>(&'a self, call: &'a ToolCall) -> Pin<Box<dyn Future<Output = ToolOutput> + Send + 'a>> {
         match &self.inner {

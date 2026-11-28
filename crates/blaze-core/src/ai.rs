@@ -13,7 +13,7 @@ use crate::error::{Error, Result};
 use crate::prompts::system_prompt;
 use crate::tools::tools_for_opts;
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolCall {
     pub id: String,
@@ -231,6 +231,18 @@ struct Pending {
     extra: Option<Map<String, Value>>,
 }
 
+fn refuses_images(error: &str) -> bool {
+    ["Unable to download the file", "Only HTTPS URLs are supported"].iter().any(|k| error.contains(k))
+}
+
+fn without_images(messages: &mut [ChatMessage]) {
+    for m in messages {
+        if let Some(n) = m.images.take().map(|v| v.len()).filter(|n| *n > 0) {
+            m.content.push_str(&format!("\n[This provider could not accept {n} attached image(s), so you cannot see them. Say so if the answer depends on them.]"));
+        }
+    }
+}
+
 /// Incremental parser for the OpenAI SSE stream. Feed raw bytes, get events.
 #[derive(Default)]
 pub struct SseParser {
@@ -400,11 +412,13 @@ pub async fn stream_chat(
     }
     let url = &target.url;
     let mut echo_dropped = req.no_reasoning_echo;
+    let mut images_dropped = !req.messages.iter().any(|m| m.images.as_ref().is_some_and(|v| !v.is_empty()));
 
     // Retry connection failures and 5xx a couple of times, but only before any
     // output has been read, so nothing is ever duplicated.
     let mut resp = None;
-    for attempt in 0..3u64 {
+    let mut attempt = 0u64;
+    while attempt < 3 {
         if cancel.is_cancelled() {
             return Ok(());
         }
@@ -440,6 +454,17 @@ pub async fn stream_chat(
                     let mut plain = req.clone();
                     plain.no_reasoning_echo = true;
                     body = serde_json::to_vec(&build_body(&plain))?;
+                    attempt += 1;
+                    continue;
+                }
+                // Some gateways cannot pass pictures on. The pictures stay in
+                // the history, so without this every later message would fail.
+                if status == 400 && !images_dropped && refuses_images(&text) {
+                    images_dropped = true;
+                    let mut plain = req.clone();
+                    plain.no_reasoning_echo = echo_dropped;
+                    without_images(&mut plain.messages);
+                    body = serde_json::to_vec(&build_body(&plain))?;
                     continue;
                 }
                 return Err(friendly_http_error(status, &text, target.branded));
@@ -451,6 +476,7 @@ pub async fn stream_chat(
             }
             Err(e) => return Err(e.into()),
         }
+        attempt += 1;
     }
     let Some(resp) = resp else {
         return Err(Error::msg(if target.branded {
@@ -721,5 +747,15 @@ mod tests {
         let mut got = Vec::new();
         stream_chat(&http, &Target::blaze(&format!("http://127.0.0.1:{port}"), "test-key"), &req("ask"), CancellationToken::new(), |e| got.push(e)).await.unwrap();
         assert_eq!(got, vec![StreamEvent::Text { text: "pong".into() }]);
+    }
+
+    #[test]
+    fn providers_that_refuse_pictures_get_the_text_only() {
+        assert!(refuses_images(r#"{"error":{"message":"anthropic_: {\"message\":\"Only HTTPS URLs are supported.\"}"}}"#));
+        assert!(refuses_images("Unable to download the file. Please verify the URL and try again."));
+        assert!(!refuses_images("context length exceeded"));
+        let mut m = vec![ChatMessage { role: "user".into(), content: "look".into(), images: Some(vec!["data:image/png;base64,AA".into()]), ..Default::default() }];
+        without_images(&mut m);
+        assert!(m[0].images.is_none() && m[0].content.starts_with("look\n[This provider could not accept 1"));
     }
 }

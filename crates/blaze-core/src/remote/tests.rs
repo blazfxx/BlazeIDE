@@ -308,3 +308,23 @@ async fn bots_and_rooms_from_the_phone() {
     assert_eq!(v["messages"][1]["author"], "Nova");
     assert_eq!(v["messages"][1]["text"], "Room answer from Nova.");
 }
+
+#[test]
+fn a_chat_the_ide_is_working_on_shows_as_live() {
+    let d = tempfile::tempdir().unwrap();
+    let now = crate::agent::now_ms();
+    for (id, live) in [("fresh", Some(now - 20_000.0)), ("stale", Some(now - 600_000.0)), ("done", None)] {
+        let mut v = serde_json::json!({ "id": id, "title": id, "updatedAt": now, "messages": [{ "role": "user", "content": "<environment_details>\nWorkspace root: x\n</environment_details>\n\nfix the header" }] });
+        if let Some(l) = live {
+            v["live"] = serde_json::json!(l);
+        }
+        crate::chats::save(d.path(), &v).unwrap();
+    }
+    let mut live: Vec<(String, bool)> = crate::chats::list(d.path()).into_iter().map(|c| (c.id, c.live)).collect();
+    live.sort();
+    assert_eq!(live, vec![("done".to_string(), false), ("fresh".to_string(), true), ("stale".to_string(), false)]);
+    // The phone sees what was typed, not the project file list in front of it.
+    let chat = crate::chatfile::ChatFile::load(d.path(), "fresh").unwrap();
+    assert!(crate::chats::is_live(chat.extra.get("live")));
+    assert_eq!(super::phone_view(&chat.messages)[0]["text"], "fix the header");
+}

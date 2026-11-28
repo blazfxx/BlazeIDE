@@ -11,6 +11,7 @@ mod mobile;
 mod presence;
 mod secrets;
 mod skills;
+mod web;
 mod windows;
 
 use std::collections::HashMap;
@@ -196,6 +197,8 @@ pub fn run() {
             skills::skills_pick_folder,
             skills::skills_import,
             skills::skills_use,
+            web::web_tool,
+            web::approval_risk,
             commands::ext_install,
             commands::ext_uninstall,
             commands::ext_list,
@@ -241,6 +244,7 @@ pub fn run() {
             if let tauri::RunEvent::Exit = event {
                 let state = app.state::<AppState>();
                 state.pty.kill_all();
+                tauri::async_runtime::block_on(blaze_core::web::chrome::close_all());
                 state.watch.unwatch_all();
                 // A background-downloaded update that was not installed yet
                 // (Windows: the installer must close the app) goes in now, so

@@ -75,6 +75,9 @@ impl Host for IdeHost {
         if let Ok(dir) = self.app.path().app_config_dir() {
             blaze_core::skills::tool::for_chat(&mut c, &dir);
         }
+        if s.get("webAccess").and_then(Value::as_bool).unwrap_or(true) {
+            blaze_core::web::tool::attach(&mut c, "phone");
+        }
         c
     }
     fn projects(&self) -> Vec<PathBuf> {

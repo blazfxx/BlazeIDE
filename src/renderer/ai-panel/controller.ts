@@ -7,6 +7,7 @@ import type { EditorArea } from '../editor/index';
 import type { ChatView } from './chat';
 import { execToolCall, buildWorkspaceContext } from './toolExec';
 import { RunChanges } from './runChanges';
+import { approvalLevel } from './approval';
 import { joinProjectPath } from '../../shared/applyDiff';
 import {
   COMPACT_INSTRUCTION,
@@ -100,8 +101,29 @@ export function createController(view: ChatView, editor: EditorArea): Controller
     });
   }
 
+  // While a run is going, only what is complete is saved: a tool call without
+  // its result could not be continued from.
+  let stableLength = 0;
+  let saveWarned = false;
+  const HEARTBEAT_MS = 20_000;
+  setInterval(() => { if (streaming) void save(); }, HEARTBEAT_MS);
+
+  /** Mark everything so far as complete and save it, so a phone sees it now. */
+  function checkpointSave(): void {
+    stableLength = conversation.length;
+    void save();
+  }
+
+  // One save at a time, in order: a late "still working" save must not land
+  // after the final one.
+  let saving: Promise<void> = Promise.resolve();
+  function save(): Promise<void> {
+    saving = saving.then(writeChat, writeChat);
+    return saving;
+  }
+
   /** Save the current conversation to .blazeide (if it has any messages). */
-  async function save(): Promise<void> {
+  async function writeChat(): Promise<void> {
     if (conversation.length === 0) return;
     if (!chatId) {
       chatId = newChatId();
@@ -116,10 +138,17 @@ export function createController(view: ChatView, editor: EditorArea): Controller
       updatedAt: knownUpdatedAt,
       mode: state.settings.aiMode,
       model: activeModelLabel(),
-      messages: conversation,
+      messages: streaming ? conversation.slice(0, stableLength) : conversation,
       checkpoints,
+      ...(streaming ? { live: knownUpdatedAt } : {}),
     };
-    if (await persistChat(chat)) bus.emit('ai-chats-changed', undefined);
+    if (chat.messages.length === 0) return;
+    if (await persistChat(chat)) {
+      bus.emit('ai-chats-changed', undefined);
+    } else if (state.projectRoot && !saveWarned) {
+      saveWarned = true;
+      view.addNotice('This chat could not be saved, so it will not show up in chat history or on your phone.');
+    }
   }
 
   /** Load the open chat again if another app saved a newer copy. Never while
@@ -174,7 +203,7 @@ export function createController(view: ChatView, editor: EditorArea): Controller
         // Stream write_file content straight into the editor (Cursor-style).
         // Only when we'll write directly (agent mode or auto-approve) — in edit
         // mode the diff view is the surface, so we don't touch the live model.
-        const liveOk = state.settings.aiMode === 'agent' || state.settings.aiAutoApprove;
+        const liveOk = approvalLevel() !== 'ask';
         const root = state.projectRoot;
         const isWrite = liveNames.get(ev.index) === 'write_file';
         if (liveOk && root && isWrite) {
@@ -317,6 +346,8 @@ export function createController(view: ChatView, editor: EditorArea): Controller
           ? { role: 'user', content: `[${shots.length} browser screenshot(s) were taken, but ${m?.displayName ?? 'this model'} cannot see images. Use the console action and the code to check the page instead.]` }
           : { role: 'user', content: `[Browser screenshot(s) you just took: ${shots.map((s) => s.label).join('; ')}. Look at them carefully and fix what is wrong before finishing.]`, images: shots.map((s) => s.url) });
       }
+      // The round is complete: calls and their results.
+      checkpointSave();
       if (cancelled) { view.setWorking(false); view.addNotice('Stopped.'); break; }
       // Tools done for this round; the next round is generating — keep a
       // visible indicator so the panel never looks frozen.
@@ -457,6 +488,8 @@ export function createController(view: ChatView, editor: EditorArea): Controller
           // tool set and system prompt (resolved in the main process by mode).
           const prefix = await firstTurnPrefix();
           conversation.push({ role: 'user', content: `${prefix}${userText}`, ...withImages });
+          if (!chatTitle) chatTitle = deriveTitle([{ role: 'user', content: userText }]);
+          checkpointSave();
           try {
             await runAgentLoop();
           } finally {
@@ -467,6 +500,8 @@ export function createController(view: ChatView, editor: EditorArea): Controller
           }
         } else {
           conversation.push({ role: 'user', content: buildAskContent(userText), ...withImages });
+          if (!chatTitle) chatTitle = deriveTitle([{ role: 'user', content: userText }]);
+          checkpointSave();
           if ((await streamRound()) === 'error') showLastError();
           if (assistantText) conversation.push({ role: 'assistant', content: assistantText });
         }
@@ -532,6 +567,7 @@ export function createController(view: ChatView, editor: EditorArea): Controller
       try {
         // Ask the model to summarize, capturing the summary text without
         // persisting the request/summary turns into the kept history.
+        stableLength = conversation.length;
         conversation.push({ role: 'user', content: COMPACT_INSTRUCTION });
         if ((await streamRound()) === 'error') showLastError();
         const summary = assistantText.trim();

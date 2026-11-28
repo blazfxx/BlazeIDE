@@ -69,9 +69,9 @@ impl ExtraTools for BotTools {
         matches!(name, "remember" | "check_back" | "hand_off") || self.computer.as_ref().is_some_and(|c| c.handles(name))
     }
 
-    fn needs_approval(&self, level: Approval, name: &str) -> bool {
+    fn needs_approval(&self, level: Approval, call: &ToolCall) -> bool {
         match &self.computer {
-            Some(c) if c.handles(name) => c.needs_approval(level, name),
+            Some(c) if c.handles(&call.name) => c.needs_approval(level, call),
             _ => false,
         }
     }

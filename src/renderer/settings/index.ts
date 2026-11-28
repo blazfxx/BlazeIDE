@@ -1,5 +1,7 @@
 // Settings tab — Cursor-style: left nav rail + searchable sections of rows.
 
+import { APPROVALS, approvalLevel, setApproval } from '../ai-panel/approval';
+import type { ApprovalLevel } from '../../shared/types';
 import { openSkillsLibrary } from '../skills/library';
 import { REASONING_LEVELS } from '../../shared/types';
 import { BILLING_URL, MODELS_URL } from '../../shared/modelCatalog';
@@ -142,7 +144,8 @@ function buildAISection(): HTMLElement[] {
   return [
     settingRow('Default model', 'Model used for new conversations. Every BlazeAPI model your account can use is listed.', selectInput(models, s.selectedModel, (v) => void apply({ selectedModel: v }))),
     settingRow('Reasoning effort', 'How hard models think before answering. Higher is slower and more thorough; Off disables thinking where supported.', selectInput(reasoningOptions, s.reasoningEffort, (v) => void apply({ reasoningEffort: v as typeof s.reasoningEffort }))),
-    settingRow('Auto-approve agent actions', 'Agent will modify files and run commands without asking. Use with care.', toggle(s.aiAutoApprove, (v) => void apply({ aiAutoApprove: v }))),
+    settingRow('Approvals', 'What the chat agent may do without asking. Auto runs everything except destructive actions (deleting, force-pushing, publishing, system changes). YOLO approves everything.', selectInput(APPROVALS.map((a) => ({ value: a.value, label: `${a.label}: ${a.hint}` })), approvalLevel(), (v) => void setApproval(v as ApprovalLevel))),
+    settingRow('Web access', 'Let the AI search the web, read pages and use a hidden browser (your Chrome or Edge with an empty profile). It can only reach public websites. Also used by the blaze command and phone chats; each bot has its own switch.', toggle(s.webAccess !== false, (v) => void apply({ webAccess: v }))),
     settingRow('Autocomplete', 'Ghost-text suggestions while you type; press Tab to accept. Uses a very cheap fast model by default (a fraction of a cent per hundred suggestions) and falls back to a free one.', toggle(s.aiAutocomplete, (v) => void apply({ aiAutocomplete: v }))),
     settingRow('Autocomplete model', 'Which model writes the suggestions. Automatic picks a cheap fast one.', selectInput([{ value: '', label: 'Automatic (cheap, fast)' }, ...models], s.aiAutocompleteModel, (v) => void apply({ aiAutocompleteModel: v }))),
     settingRow('Routing', 'Which BlazeAPI routing chat requests use. Normal: the most models and the lowest prices. Direct: model makers and trusted resellers only. Account: whatever your BlazeAPI account is set to.', selectInput(routingChoices().map((c) => ({ value: c.value, label: c.admin ? `${c.label} (owner only)` : c.label })), s.aiRouting ?? '', (v) => void setRouting(v as AIRouting).then(() => apply({})))),

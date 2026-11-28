@@ -26,8 +26,27 @@ function proxiedUrl(v: string): string | null {
   return `${base}/${host}:${port}${m[3] || '/'}`;
 }
 
+const BARE_LOOPBACK = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/.*)?$/i;
+
+/** What the address bar shows: "localhost:3000/about" or a project path, never
+ *  the IDE's internal blazeweb: / blazemedia: addresses. */
+export function displayUrl(url: string): string {
+  const web = /^(?:blazeweb:\/\/localhost|http:\/\/blazeweb\.localhost)\/(.*)$/i.exec(url);
+  if (web) return web[1].replace(/^(localhost|127\.0\.0\.1|\[::1\]):(80|443)(?=\/|$)/i, '$1');
+  const media = /^(?:blazemedia:\/\/localhost|http:\/\/blazemedia\.localhost)(\/.*)$/i.exec(url);
+  if (media) {
+    let path = media[1];
+    try { path = decodeURIComponent(path.split(/[?#]/)[0]); } catch { /* keep as it is */ }
+    if (/^\/[A-Za-z]:\//.test(path)) path = path.slice(1);
+    const root = (state.projectRoot ?? '').replace(/\\/g, '/');
+    return root && path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path;
+  }
+  return url.replace(/^http:\/\/(?=localhost|127\.0\.0\.1|\[::1\])/i, '');
+}
+
 function toPreviewUrl(input: string): string {
-  const v = input.trim();
+  let v = input.trim();
+  if (BARE_LOOPBACK.test(v)) v = `http://${v}`;
   const proxied = proxiedUrl(v);
   if (proxied) return proxied;
   if (/^blazeweb:/i.test(v) || /^http:\/\/blazeweb\.localhost\//i.test(v)) return v;
@@ -50,6 +69,35 @@ function defaultUrl(editor: EditorArea): string {
 // a helper injected by the Rust blazemedia: handler (preview_agent.js) that
 // answers 'void:agent' requests: console, click, scroll, screenshot.
 interface PreviewHandle { frame: HTMLIFrameElement; urlInput: HTMLInputElement; load: () => void; setWidth: (w: number | null) => void }
+
+const DEVICES: Array<{ key: string; label: string; w: number | null; h: number | null }> = [
+  { key: 'fit', label: 'Fit', w: null, h: null },
+  { key: 'phone', label: 'Phone', w: 390, h: 844 },
+  { key: 'tablet', label: 'Tablet', w: 820, h: 1180 },
+  { key: 'desktop', label: 'Desktop', w: 1440, h: null },
+];
+const DEVICE_KEY = 'blaze-preview-device';
+function savedDevice(): string {
+  try { return localStorage.getItem(DEVICE_KEY) ?? 'fit'; } catch { return 'fit'; }
+}
+
+/** Where the frame goes in the stage: a size larger than the room is scaled
+ *  down, so a page is never cut off. */
+export function frameLayout(stageW: number, stageH: number, w: number | null, h: number | null): { width: number; height: number; left: number; top: number; scale: number } {
+  if (!w) return { width: stageW, height: stageH, left: 0, top: 0, scale: 1 };
+  const pad = w < 1000 ? 16 : 0;
+  const roomW = Math.max(1, stageW - pad * 2);
+  const roomH = Math.max(1, stageH - pad * 2);
+  const scale = Math.min(1, roomW / w, h ? Math.max(0.5, roomH / h) : 1);
+  const height = h ? Math.min(h, Math.floor(roomH / scale)) : Math.floor(roomH / scale);
+  return { width: w, height, scale, left: Math.max(0, Math.round((stageW - w * scale) / 2)), top: pad };
+}
+
+const svg = (d: string): string => `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
+const ICON_BACK = svg('<path d="M19 12H5M11 18l-6-6 6-6"/>');
+const ICON_FORWARD = svg('<path d="M5 12h14M13 6l6 6-6 6"/>');
+const ICON_RELOAD = svg('<path d="M20 11a8 8 0 1 0-2.3 6.4M20 4v7h-7"/>');
+const ICON_EXTERNAL = svg('<path d="M14 4h6v6M20 4l-9 9M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/>');
 let current: PreviewHandle | null = null;
 let editorRef: EditorArea | null = null;
 
@@ -164,36 +212,103 @@ function openPreview(editor: EditorArea, initialUrl?: string): void {
   const start = initialUrl ? toPreviewUrl(initialUrl) : defaultUrl(editor);
 
   editor.openCustomTab(TAB_ID, 'Preview', (host) => {
-    host.style.cssText = 'display:flex;flex-direction:column;height:100%;position:relative;';
+    host.style.cssText = 'display:flex;flex-direction:column;height:100%;position:relative;min-width:0;';
 
+    const button = (cls: string, html: string, title: string): HTMLButtonElement => {
+      const b = el('button', cls, html) as HTMLButtonElement;
+      b.type = 'button';
+      b.title = title;
+      b.setAttribute('aria-label', title);
+      return b;
+    };
     const bar = el('div', 'preview-bar');
+    const backBtn = button('preview-btn pv-back', ICON_BACK, 'Back');
+    const fwdBtn = button('preview-btn pv-forward', ICON_FORWARD, 'Forward');
+    const reloadBtn = button('preview-btn pv-reload', ICON_RELOAD, 'Reload');
     const urlInput = el('input', 'preview-url') as HTMLInputElement;
     urlInput.spellcheck = false;
-    urlInput.placeholder = 'file path or http://localhost:3000';
-    urlInput.value = start;
-    const reloadBtn = el('button', 'preview-btn', '⟳');
-    reloadBtn.title = 'Reload';
-    const selectBtn = el('button', 'preview-btn preview-select', icon(iconAgent, 'icon-12'));
-    selectBtn.title = 'Select an element to comment on';
-    const hint = el('span', 'preview-hint');
-    bar.append(urlInput, reloadBtn, selectBtn, hint);
+    urlInput.placeholder = 'localhost:3000 or a file such as index.html';
+    urlInput.setAttribute('aria-label', 'Address');
+    urlInput.value = displayUrl(start);
+    const externalBtn = button('preview-btn pv-external', ICON_EXTERNAL, 'Open in your web browser');
+    const devices = el('div', 'pv-devices');
+    const size = el('span', 'pv-size');
+    const selectBtn = button('preview-btn preview-select', `${icon(iconAgent, 'icon-12')}<span>Comment</span>`, 'Click something in the page to tell the AI what to change');
+    const hint = el('div', 'preview-hint');
+    bar.append(backBtn, fwdBtn, reloadBtn, urlInput, externalBtn, devices, size, selectBtn);
 
+    const stage = el('div', 'pv-stage');
     const frame = el('iframe', 'preview-frame') as HTMLIFrameElement;
+    frame.title = 'Page preview';
     frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-modals');
-    host.append(bar, frame);
+    const empty = el('div', 'pv-empty');
+    empty.append(el('div', 'pv-empty-title', 'Nothing to preview yet'), el('div', '', 'Start your dev server and type its address above, such as localhost:3000, or type the path of an HTML file in your project.'));
+    stage.append(frame, empty);
+    host.append(bar, hint, stage);
 
     let selecting = false;
+    let device = savedDevice();
+    let agentWidth: number | null = null;
+    // Pages visited, for Back and Forward (the frame's own history cannot be
+    // read from here).
+    const visited: string[] = [];
+    let at = -1;
+    let moving = 0;
+
+    function layout(): void {
+      const preset = DEVICES.find((d) => d.key === device) ?? DEVICES[0];
+      const w = agentWidth ?? preset.w;
+      const l = frameLayout(stage.clientWidth, stage.clientHeight, w, agentWidth ? null : preset.h);
+      Object.assign(frame.style, { width: `${l.width}px`, height: `${l.height}px`, left: `${l.left}px`, top: `${l.top}px`, transform: l.scale === 1 ? '' : `scale(${l.scale})` });
+      frame.classList.toggle('framed', !!w && w < 1000);
+      size.textContent = w ? `${agentWidth ? 'AI · ' : ''}${w} px${l.scale < 0.995 ? ` · ${Math.round(l.scale * 100)}%` : ''}` : '';
+      for (const b of Array.from(devices.children) as HTMLElement[]) b.classList.toggle('on', !agentWidth && b.dataset.device === device);
+    }
+    for (const d of DEVICES) {
+      const b = button('pv-device', d.label, d.w ? `${d.label}: ${d.w} px wide` : 'Fill the panel');
+      b.dataset.device = d.key;
+      b.addEventListener('click', () => {
+        device = d.key;
+        agentWidth = null;
+        try { localStorage.setItem(DEVICE_KEY, d.key); } catch { /* keep it for now only */ }
+        layout();
+      });
+      devices.appendChild(b);
+    }
+
+    function nav(): void {
+      backBtn.disabled = at <= 0;
+      fwdBtn.disabled = at >= visited.length - 1;
+      externalBtn.disabled = !/^(https?:\/\/|localhost|127\.0\.0\.1|\[::1\])/i.test(urlInput.value);
+    }
+    function arrived(url: string): void {
+      if (moving) {
+        at = Math.min(Math.max(at + moving, 0), visited.length - 1);
+        visited[at] = url;
+        moving = 0;
+      } else if (visited[at] !== url) {
+        visited.splice(at + 1);
+        visited.push(url);
+        at = visited.length - 1;
+      }
+      if (document.activeElement !== urlInput) urlInput.value = url;
+      nav();
+    }
 
     function load(): void {
-      frame.src = toPreviewUrl(urlInput.value);
+      const target = urlInput.value.trim();
+      empty.style.display = target ? 'none' : '';
+      frame.style.visibility = target ? '' : 'hidden';
+      if (!target) return;
+      frame.src = toPreviewUrl(target);
+      urlInput.value = displayUrl(frame.src);
+      arrived(urlInput.value);
     }
-    // The agent can emulate a viewport width (e.g. 390 for a phone).
+    // The agent can try a width (e.g. 390 for a phone); yours comes back when
+    // its run ends.
     function setWidth(w: number | null): void {
-      frame.style.width = w ? `${w}px` : '';
-      frame.style.maxWidth = w ? 'none' : '';
-      frame.style.alignSelf = w ? 'center' : '';
-      frame.style.flex = w ? 'none' : '';
-      frame.style.height = w ? '100%' : '';
+      agentWidth = w;
+      layout();
     }
     current = { frame, urlInput, load, setWidth };
 
@@ -204,17 +319,20 @@ function openPreview(editor: EditorArea, initialUrl?: string): void {
     function setSelecting(on: boolean): void {
       selecting = on;
       selectBtn.classList.toggle('active', on);
-      hint.textContent = on ? 'Click an element in the page to comment' : '';
+      hint.textContent = on ? 'Click anything in the page, then say what should change. Click Comment again to cancel.' : '';
       // Post twice to beat any timing race with the injected script's listener.
       postToFrame({ type: 'void:set-selecting', on });
       window.setTimeout(() => postToFrame({ type: 'void:set-selecting', on }), 100);
     }
 
-    // The injected page script posts comments back here.
+    // The injected page script posts comments and its address back here.
     const onMessage = (e: MessageEvent): void => {
+      if (!frame.isConnected) { window.removeEventListener('message', onMessage); return; }
       if (e.source !== frame.contentWindow) return;
       const d = e.data;
-      if (!d || typeof d !== 'object' || d.type !== 'void:element-comment') return;
+      if (!d || typeof d !== 'object') return;
+      if (d.type === 'void:location' && typeof d.url === 'string') { arrived(displayUrl(d.url)); return; }
+      if (d.type !== 'void:element-comment') return;
       const c = d.comment as Partial<ElementComment>;
       if (!c || typeof c.comment !== 'string') return;
       bus.emit('preview-comment', {
@@ -229,6 +347,10 @@ function openPreview(editor: EditorArea, initialUrl?: string): void {
       setSelecting(false);
     };
     window.addEventListener('message', onMessage);
+    bus.on('ai-status', ({ streaming }) => {
+      if (!streaming && agentWidth && frame.isConnected) setWidth(null);
+    });
+    new ResizeObserver(() => { if (frame.isConnected) layout(); }).observe(stage);
 
     frame.addEventListener('load', () => {
       // Re-assert select state after a (re)load so the freshly injected script
@@ -236,10 +358,19 @@ function openPreview(editor: EditorArea, initialUrl?: string): void {
       postToFrame({ type: 'void:set-selecting', on: selecting });
     });
 
+    backBtn.addEventListener('click', () => { if (at > 0) { moving = -1; postToFrame({ type: 'void:agent', id: 'nav', op: 'back' }); } });
+    fwdBtn.addEventListener('click', () => { if (at < visited.length - 1) { moving = 1; postToFrame({ type: 'void:agent', id: 'nav', op: 'forward' }); } });
     reloadBtn.addEventListener('click', load);
-    urlInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') load(); });
+    externalBtn.addEventListener('click', () => {
+      const v = urlInput.value.trim();
+      void window.void.openExternal(/^https?:\/\//i.test(v) ? v : `http://${v}`);
+    });
+    urlInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { urlInput.blur(); load(); } });
+    urlInput.addEventListener('focus', () => urlInput.select());
     selectBtn.addEventListener('click', () => setSelecting(!selecting));
 
-    if (start) load();
+    layout();
+    nav();
+    load();
   });
 }

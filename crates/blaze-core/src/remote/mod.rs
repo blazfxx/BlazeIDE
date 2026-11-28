@@ -180,6 +180,10 @@ impl Server {
             Some(id) => ChatFile::load(&root, id)?,
             None => ChatFile::new(&root, "agent", &self.host.default_model()),
         };
+        if crate::chats::is_live(chat.extra.get("live")) {
+            return Err("Blaze IDE is working on this chat on your computer. Wait for it to finish, or stop it there.".into());
+        }
+        chat.extra.remove("live");
         if let Some(m) = model.filter(|m| !m.is_empty()) {
             chat.model = m;
         }
@@ -568,10 +572,18 @@ async fn chats(State(s): State<Arc<Server>>, Query(q): Query<RootQ>) -> Response
         .take(100)
         .map(|c| {
             let key = format!("{}|{}", root.display(), c.id);
-            json!({ "id": c.id, "title": c.title, "updatedAt": c.updated_at, "messages": c.message_count, "working": running.contains(&key) })
+            json!({ "id": c.id, "title": c.title, "updatedAt": c.updated_at, "messages": c.message_count, "working": c.live || running.contains(&key), "live": c.live })
         })
         .collect();
     ok(json!({ "chats": list }))
+}
+
+/// The IDE puts the project's file list in front of the first message.
+fn without_context(text: &str) -> &str {
+    match (text.trim_start().starts_with("<environment_details>"), text.find("</environment_details>")) {
+        (true, Some(end)) => text[end + "</environment_details>".len()..].trim_start(),
+        _ => text,
+    }
 }
 
 /// A chat for the phone: user and assistant text plus one line per tool call.
@@ -579,7 +591,7 @@ pub fn phone_view(messages: &[ChatMessage]) -> Vec<Value> {
     let mut out = Vec::new();
     for m in messages {
         match m.role.as_str() {
-            "user" if !m.content.starts_with("[Screenshot") && !m.content.starts_with("[Browser screenshot") => out.push(json!({ "role": "user", "text": m.content })),
+            "user" if !m.content.starts_with("[Screenshot") && !m.content.starts_with("[Browser screenshot") => out.push(json!({ "role": "user", "text": without_context(&m.content) })),
             "assistant" => {
                 let tools: Vec<String> = m.tool_calls.iter().flatten().map(agent::summarize).collect();
                 if !m.content.trim().is_empty() || !tools.is_empty() {
@@ -600,7 +612,8 @@ async fn chat(State(s): State<Arc<Server>>, Query(q): Query<RootQ>) -> Response 
             let key = format!("{}|{}", root.display(), c.id);
             let run = s.runs.lock().expect("runs").iter().find(|(_, r)| r.chat_key == key).map(|(id, _)| id.clone());
             let pending: Vec<Value> = s.pending.lock().expect("pending").values().filter(|p| p.view["chatId"] == c.id.as_str()).map(|p| p.view.clone()).collect();
-            ok(json!({ "id": c.id, "title": c.title, "model": c.model, "mode": c.mode, "messages": phone_view(&c.messages), "runId": run, "pending": pending, "seq": s.log.lock().expect("log").0 }))
+            let live = crate::chats::is_live(c.extra.get("live"));
+            ok(json!({ "live": live, "id": c.id, "title": c.title, "model": c.model, "mode": c.mode, "messages": phone_view(&c.messages), "runId": run, "pending": pending, "seq": s.log.lock().expect("log").0 }))
         }
         Err(e) => fail(StatusCode::NOT_FOUND, &e),
     }

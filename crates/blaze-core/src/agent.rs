@@ -34,7 +34,9 @@ pub enum Approval {
     /// File changes inside the project are applied; commands and paid
     /// generations still ask. (What the IDE's Agent mode does.)
     Edits,
-    /// Nothing asks.
+    /// Everything runs except destructive actions (see `risk`), which ask.
+    Auto,
+    /// YOLO: nothing asks.
     Full,
 }
 
@@ -43,7 +45,8 @@ impl Approval {
         match s.trim().to_ascii_lowercase().as_str() {
             "ask" => Some(Approval::Ask),
             "edits" | "auto-edit" | "autoedit" => Some(Approval::Edits),
-            "full" | "full-access" | "yolo" => Some(Approval::Full),
+            "auto" => Some(Approval::Auto),
+            "yolo" | "full" | "full-access" => Some(Approval::Full),
             _ => None,
         }
     }
@@ -51,7 +54,8 @@ impl Approval {
         match self {
             Approval::Ask => "Ask",
             Approval::Edits => "Approve edits",
-            Approval::Full => "Full access",
+            Approval::Auto => "Auto",
+            Approval::Full => "YOLO",
         }
     }
 }
@@ -67,9 +71,28 @@ pub fn needs_approval(level: Approval, tool: &str) -> bool {
     }
     match level {
         Approval::Full => false,
+        // Commands are judged by what they run: see `risk_of`.
+        Approval::Auto => !(WRITES.contains(&tool) || matches!(tool, "run_command" | "generate_image" | "generate_video")),
         Approval::Edits => !WRITES.contains(&tool),
         Approval::Ask => true,
     }
+}
+
+/// Why Auto still asks about this call, if it does.
+pub fn risk_of(call: &ToolCall) -> Option<&'static str> {
+    if !matches!(call.name.as_str(), "run_command" | "vm_exec") {
+        return None;
+    }
+    let args: Map<String, Value> = serde_json::from_str(&call.arguments).unwrap_or_default();
+    match args.get("command").and_then(Value::as_str) {
+        Some(c) => crate::risk::command_risk(c),
+        None => Some("the command could not be read"),
+    }
+}
+
+/// Does this built-in call ask the user at `level`?
+pub fn call_needs_approval(level: Approval, call: &ToolCall) -> bool {
+    needs_approval(level, &call.name) || (level == Approval::Auto && risk_of(call).is_some())
 }
 
 /// What the host is told while a turn runs.
@@ -105,7 +128,7 @@ pub trait ExtraTools: Send + Sync {
     /// built-in that needs approval at the agent's level (default: no).
     fn run<'a>(&'a self, call: &'a ToolCall) -> Pin<Box<dyn Future<Output = ToolOutput> + Send + 'a>>;
     /// Whether this tool asks for approval at the given level.
-    fn needs_approval(&self, _level: Approval, _name: &str) -> bool {
+    fn needs_approval(&self, _level: Approval, _call: &ToolCall) -> bool {
         false
     }
 }
@@ -222,6 +245,16 @@ pub fn summarize(call: &ToolCall) -> String {
         "generate_video" => format!("Generate video {} ({})", s("path"), clip(s("prompt"))),
         "write_plan" => format!("Save plan: {}", s("title")),
         "ask_question" => "Ask you a question".into(),
+        "web_search" => format!("Search the web for \"{}\"", s("query")),
+        "web_fetch" => format!("Read {}", clip(s("url"))),
+        "web_browser" => format!("Browser: {} {}", s("action"), clip(s("url"))).trim_end().to_string(),
+        "web_interact" => {
+            let n = args.get("element").map(Value::to_string).unwrap_or_default();
+            match s("action").as_str() {
+                "type" => format!("Browser: type \"{}\" into [{n}]{}", clip(s("text")), if args.get("submit") == Some(&Value::Bool(true)) { " and press Enter" } else { "" }),
+                a => format!("Browser: {a} [{n}]"),
+            }
+        }
         "use_skill" => format!("Use skill: {} {}", s("name"), s("file")).trim_end().to_string(),
         other => clip(format!("{other} {}", if call.arguments.len() > 2 { call.arguments.as_str() } else { "" })),
     }
@@ -258,7 +291,11 @@ impl Run<'_> {
 
     async fn approve(&self, call: &ToolCall) -> bool {
         let (tx, rx) = oneshot::channel();
-        if self.host.send(HostRequest::Approve { call: call.clone(), summary: summarize(call), reply: tx }).await.is_err() {
+        let mut summary = summarize(call);
+        if let Some(why) = risk_of(call).filter(|_| self.cfg.approval == Approval::Auto) {
+            summary = format!("{summary}  (Auto asks because {why})");
+        }
+        if self.host.send(HostRequest::Approve { call: call.clone(), summary, reply: tx }).await.is_err() {
             return false;
         }
         tokio::select! {
@@ -400,9 +437,9 @@ impl Run<'_> {
         let extra = self.cfg.extra_tools.clone();
         let is_extra = extra.as_ref().is_some_and(|e| e.handles(&call.name));
         let gated = if is_extra {
-            extra.as_ref().is_some_and(|e| e.needs_approval(self.cfg.approval, &call.name))
+            extra.as_ref().is_some_and(|e| e.needs_approval(self.cfg.approval, call))
         } else {
-            needs_approval(self.cfg.approval, &call.name)
+            call_needs_approval(self.cfg.approval, call)
         };
         if !is_extra && !crate::tools::mode_allows(&self.cfg.mode, &call.name) {
             return format!("Error: {} is not available in {} mode.", call.name, self.cfg.mode).into();
@@ -871,6 +908,17 @@ mod tests {
         assert!(!needs_approval(Approval::Full, "run_command"));
         assert!(needs_approval(Approval::Ask, "some_new_tool"));
         assert_eq!(Approval::parse("Full-Access"), Some(Approval::Full));
+        assert_eq!(Approval::parse("YOLO"), Some(Approval::Full));
+        assert_eq!(Approval::parse("auto"), Some(Approval::Auto));
+        assert_eq!(Approval::parse("auto-edit"), Some(Approval::Edits));
+        let cmd = |c: &str| ToolCall { id: "1".into(), name: "run_command".into(), arguments: serde_json::json!({ "command": c }).to_string(), ..Default::default() };
+        assert!(!call_needs_approval(Approval::Auto, &cmd("npm test")));
+        assert!(call_needs_approval(Approval::Auto, &cmd("rm -rf dist")));
+        assert!(call_needs_approval(Approval::Auto, &ToolCall { arguments: "{}".into(), ..cmd("x") }));
+        assert!(!call_needs_approval(Approval::Full, &cmd("rm -rf dist")));
+        assert!(call_needs_approval(Approval::Edits, &cmd("npm test")));
+        assert!(!needs_approval(Approval::Auto, "write_file") && !needs_approval(Approval::Auto, "generate_image"));
+        assert!(needs_approval(Approval::Auto, "some_new_tool"));
         assert_eq!(title_from("\n  Fix the login bug please\nmore"), "Fix the login bug please");
     }
 }

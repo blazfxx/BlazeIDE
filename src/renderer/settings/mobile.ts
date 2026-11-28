@@ -1,8 +1,11 @@
 // Settings > Continue on mobile: let a phone continue chats on this computer.
 // Dynamic text is always set with textContent (el() writes innerHTML).
 
-import { el } from '../state';
-import { settingBlock, settingRow, toggle } from './controls';
+import { el, state } from '../state';
+import { selectInput, settingBlock, settingRow, toggle } from './controls';
+import { APPROVALS } from '../ai-panel/approval';
+import { confirmModal } from '../sidebar/confirm';
+import type { ApprovalLevel } from '../../shared/types';
 import type { MobileStatus } from '../../shared/ipc';
 
 function text(tag: 'div' | 'span' | 'a' | 'code', cls: string, t: string): HTMLElement {
@@ -193,6 +196,17 @@ export function buildMobileSection(): HTMLElement[] {
   timer = window.setInterval(refresh, 4000);
 
   rows.push(settingRow('Continue on mobile', 'Open your Blaze chats on your phone, send messages and approve the agent\'s actions while away from this computer. Turns run here, on your BlazeAPI account. Phones can only chat and answer approvals in projects you opened here: no files, terminal or settings.', onToggle));
+  const phoneLevel = selectInput(APPROVALS.map((a) => ({ value: a.value, label: `${a.label}: ${a.hint}` })), state.settings.mobileApproval || 'edits', (v) => {
+    void (async () => {
+      if (v === 'full') {
+        const r = await confirmModal({ title: 'YOLO for phone messages?', message: 'Anyone signed in to your phone page could make this computer run any command without asking, including deleting files.', confirmLabel: 'Turn on YOLO', danger: true });
+        if (!r.confirmed) { (phoneLevel as HTMLSelectElement).value = state.settings.mobileApproval || 'edits'; return; }
+      }
+      state.settings.mobileApproval = v as ApprovalLevel;
+      await window.void.settingsSet({ mobileApproval: v as ApprovalLevel });
+    })();
+  });
+  rows.push(settingRow('Approvals for phone messages', 'What turns you send from your phone may do without asking. When one asks, you answer on the phone.', phoneLevel));
   rows.push(settingBlock('Status', '', statusBox));
   rows.push(settingBlock('Phone password', 'Phones sign in with this password (or a one-time QR code). Only a hash is stored. Changing it signs every phone out.', pwRow));
   rows.push(settingBlock('How your phone reaches this computer', 'Pick one or more, then Apply.', waysBox));

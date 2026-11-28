@@ -45,6 +45,7 @@ pub async fn run(s: &mut Session, root: &Path, model: &str, mode: &str, approval
         if tokio::signal::ctrl_c().await.is_ok() {
             c2.cancel();
             if tokio::signal::ctrl_c().await.is_ok() {
+                blaze_core::web::chrome::close_all().await;
                 std::process::exit(130);
             }
         }
@@ -57,7 +58,7 @@ pub async fn run(s: &mut Session, root: &Path, model: &str, mode: &str, approval
                 HostRequest::Approve { summary, reply, .. } => {
                     let ok = interactive && ask_line(&format!("Allow? {summary} [y/N] ")).await.is_some_and(|a| matches!(a.trim().to_lowercase().as_str(), "y" | "yes"));
                     if !interactive {
-                        eprintln!("refused (no terminal to ask; use -a edits or -a full): {summary}");
+                        eprintln!("refused (no terminal to ask; use -a auto or -a yolo): {summary}");
                     }
                     let _ = reply.send(ok);
                 }

@@ -20,6 +20,18 @@ pub struct ChatSummary {
     pub title: String,
     pub updated_at: f64,
     pub message_count: usize,
+    /// Blaze IDE is working on it right now.
+    pub live: bool,
+}
+
+/// The IDE writes `live` (milliseconds) into a chat while its agent works and
+/// refreshes it every 20 s. Generous, because a hidden window's timers slow
+/// down; a crashed IDE stops counting after this.
+const LIVE_FOR_MS: f64 = 150_000.0;
+
+pub fn is_live(live: Option<&Value>) -> bool {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as f64).unwrap_or(0.0);
+    live.and_then(Value::as_f64).is_some_and(|t| now - t < LIVE_FOR_MS && t - now < 60_000.0)
 }
 
 fn chats_dir(root: &Path) -> PathBuf {
@@ -59,6 +71,7 @@ pub fn list_in(dir: &Path) -> Vec<ChatSummary> {
                 title: v.get("title").and_then(Value::as_str).unwrap_or("Untitled").to_string(),
                 updated_at: v.get("updatedAt").and_then(Value::as_f64).unwrap_or(0.0),
                 message_count: v.get("messages").and_then(Value::as_array).map_or(0, Vec::len),
+                live: is_live(v.get("live")),
             })
         })
         .collect();

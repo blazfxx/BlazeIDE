@@ -23,10 +23,12 @@ pub mod skills;
 pub mod prompts;
 pub mod providers;
 pub mod remote;
+pub mod risk;
 pub mod pty;
 pub mod store;
 pub mod tools;
 pub mod watch;
+pub mod web;
 pub mod webproxy;
 
 pub use error::{Error, Result};

@@ -1,7 +1,8 @@
 // AI panel input area: mode pills, auto-growing textarea, send/cancel button.
 
 import { findModel } from './chatStore';
-import type { AIMode, ElementComment, FileNode, ReasoningEffort } from '../../shared/types';
+import type { AIMode, ApprovalLevel, ElementComment, FileNode, ReasoningEffort } from '../../shared/types';
+import { APPROVALS, approvalLevel, setApproval } from './approval';
 import { REASONING_LEVELS } from '../../shared/types';
 import { bus, el, escapeHtml, state } from '../state';
 import { icon, iconAI, iconClose, iconSend } from '../icons/index';
@@ -57,7 +58,33 @@ export function initInput(host: HTMLElement, controller: Controller): void {
   });
   reasoning.appendChild(reasoningSelect);
 
-  toolbar.append(modeTabs, reasoning);
+  // Approvals: what the agent may do without asking (Agent mode only).
+  const approve = el('div', 'reasoning-pick approve-pick');
+  const approveSelect = el('select', 'reasoning-select') as HTMLSelectElement;
+  approveSelect.setAttribute('aria-label', 'Approvals');
+  for (const a of APPROVALS) {
+    const opt = el('option') as HTMLOptionElement;
+    opt.value = a.value;
+    opt.textContent = a.label;
+    opt.title = a.hint;
+    approveSelect.appendChild(opt);
+  }
+  function renderApproval(): void {
+    const v = approvalLevel();
+    approveSelect.value = v;
+    approve.classList.toggle('yolo', v === 'full');
+    approve.title = `Approvals: ${APPROVALS.find((a) => a.value === v)?.hint ?? ''}`;
+    approve.style.display = state.settings.aiMode === 'agent' ? '' : 'none';
+  }
+  approveSelect.addEventListener('change', () => void setApproval(approveSelect.value as ApprovalLevel).then(renderApproval));
+  approve.appendChild(approveSelect);
+  renderApproval();
+  bus.on('ai-approval-changed', renderApproval);
+  bus.on('ai-mode-changed', renderApproval);
+
+  const picks = el('div', 'ai-picks');
+  picks.append(approve, reasoning);
+  toolbar.append(modeTabs, picks);
 
   // The textarea and send button share one rounded "field" so the arrow sits
   // inside the input. The whole field grows with the textarea.

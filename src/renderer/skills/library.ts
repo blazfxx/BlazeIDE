@@ -40,6 +40,17 @@ description: "What it does. Use when the user asks for ... (the AI picks skills 
 2. Second step.
 `;
 
+/** The bar above a list of skills: how many are picked, and one button that
+ *  picks every skill shown (or none, when they all are). */
+export function selectBar(shown: number, shownPicked: number, totalPicked: number, change: (all: boolean) => void): HTMLElement {
+  const bar = el('div', 'skl-selectbar');
+  const all = shown > 0 && shownPicked === shown;
+  const b = button('bbe-btn', all ? 'Select none' : `Select all (${shown})`, () => change(!all));
+  b.disabled = !shown;
+  bar.append(t('span', 'skl-count', `${totalPicked} selected`), b);
+  return bar;
+}
+
 /** About how many tokens the list of switched-on skills adds to each message. */
 function tokenEstimate(skills: SkillInfo[]): number {
   const chars = skills.reduce((n, s) => n + s.name.length + Math.min(s.description.length, 240) + 4, 0);
@@ -174,6 +185,11 @@ export function openSkillsLibrary(opts: { tab?: Tab; onClose?: () => void } = {}
         button('bbe-save', 'Choose a folder…', pickFolder)));
       return;
     }
+    const choosable = fresh.filter(matches);
+    body.appendChild(selectBar(choosable.length, choosable.filter((f) => picked.has(f.path)).length, picked.size, (all) => {
+      for (const f of choosable) if (all) picked.add(f.path); else picked.delete(f.path);
+      run(draw());
+    }));
     let group = '';
     for (const f of [...found].sort((a, b) => a.source.localeCompare(b.source) || a.name.localeCompare(b.name)).filter(matches)) {
       if (f.source !== group) {
@@ -188,6 +204,7 @@ export function openSkillsLibrary(opts: { tab?: Tab; onClose?: () => void } = {}
       box_.addEventListener('change', () => { if (box_.checked) picked.add(f.path); else picked.delete(f.path); run(draw()); });
       const badges: Array<[string, string]> = f.status === 'same' ? [['In your library', 'ok']] : f.status === 'differs' ? [['Different version in library', 'warn']] : [];
       const r = row(f.name, f.description, badges, box_, []);
+      if (f.status !== 'same') r.className = `skl-row pick${box_.checked ? ' on' : ''}`;
       r.title = f.path;
       r.addEventListener('click', (ev) => { if (ev.target !== box_ && !box_.disabled) box_.click(); });
       body.appendChild(r);
@@ -199,11 +216,6 @@ export function openSkillsLibrary(opts: { tab?: Tab; onClose?: () => void } = {}
       lab.append(toggle(replace, 'Replace different versions', (v) => { replace = v; run(draw()); }), t('span', '', 'Replace different versions (otherwise they are added as “name-2”)'));
       left.appendChild(lab);
     }
-    const selectAll = button('bbe-btn', picked.size >= fresh.length && fresh.length ? 'Select none' : 'Select all', () => {
-      if (picked.size >= fresh.length) picked.clear();
-      else for (const f of fresh) picked.add(f.path);
-      run(draw());
-    });
     const go = button('bbe-save', picked.size ? `Import ${picked.size}` : 'Import', () => {
       go.disabled = true;
       run(window.void.skillsImport([...picked], replace).then(async (added) => {
@@ -216,7 +228,7 @@ export function openSkillsLibrary(opts: { tab?: Tab; onClose?: () => void } = {}
       }));
     });
     go.disabled = !picked.size;
-    foot.append(left, selectAll, go);
+    foot.append(left, go);
   }
 
   async function drawStarters(): Promise<void> {

@@ -72,6 +72,8 @@
     "allow-skills-pick-folder",
     "allow-skills-import",
     "allow-skills-use",
+    "allow-web-tool",
+    "allow-approval-risk",
     "allow-bots-avatar-image",
     "allow-ext-install",
     "allow-ext-uninstall",

@@ -1,7 +1,7 @@
 // Agent tool-call cards: collapsible blocks with approval flow and status edge.
 
 import type { ToolCall } from '../../shared/types';
-import { el, escapeHtml, state } from '../state';
+import { el, escapeHtml } from '../state';
 import { iconAgent, iconCheck, iconChevronDown, iconChevronRight, iconError } from '../icons/index';
 
 const RESULT_DISPLAY_CAP = 4000;
@@ -20,7 +20,7 @@ export function argSummary(call: ToolCall): string {
     const parsed: unknown = JSON.parse(call.arguments || '{}');
     if (parsed !== null && typeof parsed === 'object') {
       const o = parsed as Record<string, unknown>;
-      const v = o.path ?? o.command ?? o.query ?? o.name ?? '';
+      const v = o.path ?? o.command ?? o.query ?? o.url ?? o.name ?? o.action ?? '';
       if (typeof v === 'string' && v) return v.length > 60 ? `${v.slice(0, 60)}...` : v;
     }
   } catch {
@@ -56,6 +56,8 @@ export interface ToolCardOptions {
   /** When false, render no Approve/Reject buttons and resolve approval to true
    *  immediately. The approval surface lives elsewhere (e.g. the diff view). */
   gated?: boolean;
+  /** Why the user is asked (shown above the buttons). */
+  why?: string;
 }
 
 export function createToolCard(call: ToolCall, opts: ToolCardOptions = {}): ToolCard {
@@ -90,9 +92,14 @@ export function createToolCard(call: ToolCall, opts: ToolCardOptions = {}): Tool
   });
 
   const gated = opts.gated !== false;
-  if (!gated || state.settings.aiAutoApprove) {
+  if (!gated) {
     settle(true);
   } else {
+    if (opts.why) {
+      const why = el('div', 'tool-why');
+      why.textContent = `Auto is asking because ${opts.why}.`;
+      block.appendChild(why);
+    }
     const actions = el('div', 'tool-actions');
     const approveBtn = el('button', 'primary', 'Approve');
     const rejectBtn = el('button', '', 'Reject');

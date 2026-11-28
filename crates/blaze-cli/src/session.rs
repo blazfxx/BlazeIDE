@@ -147,6 +147,9 @@ impl Session {
                 .into(),
         );
         blaze_core::skills::tool::for_chat(&mut cfg, &config::config_dir());
+        if self.setting_bool("webAccess", true) {
+            blaze_core::web::tool::attach(&mut cfg, "cli");
+        }
         cfg
     }
 

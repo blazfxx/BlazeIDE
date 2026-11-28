@@ -45,7 +45,7 @@ struct Cli {
     /// ask | plan | agent
     #[arg(long, global = true)]
     mode: Option<String>,
-    /// What the agent may do without asking: ask | edits | full.
+    /// What the agent may do without asking: ask | edits | auto | yolo.
     #[arg(short, long, global = true)]
     approval: Option<String>,
     /// With -p: print events as JSON lines.
@@ -145,7 +145,7 @@ fn project_dir(cli: &Cli) -> Result<PathBuf, String> {
 
 fn approval_of(cli: &Cli, s: &Session) -> Result<Approval, String> {
     match &cli.approval {
-        Some(a) => Approval::parse(a).ok_or_else(|| format!("Unknown approval level {a}: use ask, edits or full")),
+        Some(a) => Approval::parse(a).ok_or_else(|| format!("Unknown approval level {a}: use ask, edits, auto or yolo")),
         None => Ok(s.default_approval()),
     }
 }
@@ -363,7 +363,10 @@ async fn main() {
     }
     let cli = Cli::parse();
     update::cleanup();
-    if let Err(e) = run(cli).await {
+    let result = run(cli).await;
+    // Never leave the agent's hidden browser running.
+    blaze_core::web::chrome::close_all().await;
+    if let Err(e) = result {
         eprintln!("blaze: {e}");
         std::process::exit(1);
     }

@@ -230,10 +230,10 @@ impl ExtraTools for Computer {
         matches!(name, "computer" | "vm_exec")
     }
 
-    fn needs_approval(&self, level: Approval, name: &str) -> bool {
+    fn needs_approval(&self, level: Approval, call: &ToolCall) -> bool {
         // Looking is free; doing things asks at the Ask level only (the
         // desktop is isolated from the user's computer).
-        level == Approval::Ask && name == "vm_exec"
+        level == Approval::Ask && call.name == "vm_exec"
     }
 
     fn run<'a>(&'a self, call: &'a ToolCall) -> Pin<Box<dyn Future<Output = ToolOutput> + Send + 'a>> {

@@ -20,6 +20,7 @@ pub struct CliHost {
     backend: Backend,
     default_model: String,
     approval: Approval,
+    web: bool,
     image_gen: bool,
     video_gen: bool,
     image_model: String,
@@ -35,6 +36,7 @@ impl CliHost {
             backend: s.backend(),
             default_model: s.default_model(),
             approval: Approval::parse(&s.setting_str("mobileApproval")).unwrap_or(Approval::Edits),
+            web: s.setting_bool("webAccess", true),
             image_gen: s.setting_bool("aiMediaGen", false),
             video_gen: s.setting_bool("aiVideoGen", false),
             image_model: s.setting_str("imageModel"),
@@ -61,6 +63,9 @@ impl Host for CliHost {
         c.reasoning_effort = Some(if self.effort.is_empty() { "medium".into() } else { self.effort.clone() });
         c.extra_system = Some("This turn was sent from the user's phone (Continue on mobile). There is no editor or preview browser; keep replies short enough to read on a phone.".into());
         blaze_core::skills::tool::for_chat(&mut c, &config::config_dir());
+        if self.web {
+            blaze_core::web::tool::attach(&mut c, "phone");
+        }
         c
     }
     fn projects(&self) -> Vec<PathBuf> {

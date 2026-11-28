@@ -230,7 +230,8 @@ pub async fn run(engine: &Engine, bots: &Bots, bot: &Bot, cfg: &AgentConfig, con
         cmd.arg("-p").arg(&input).args(["--output-format", "stream-json", "--verbose", "--permission-prompts", "none"]);
         cmd.arg("--permission-mode").arg(match bot.approval {
             Approval::Ask => "dontAsk",
-            Approval::Edits => "acceptEdits",
+            // Their own CLIs cannot ask here: Auto is as far as edits go.
+            Approval::Edits | Approval::Auto => "acceptEdits",
             Approval::Full => "bypassPermissions",
         });
         cmd.arg("--append-system-prompt").arg(&persona);
@@ -248,7 +249,7 @@ pub async fn run(engine: &Engine, bots: &Bots, bot: &Bot, cfg: &AgentConfig, con
         cmd.args(["--json", "--skip-git-repo-check"]);
         cmd.arg("-s").arg(match bot.approval {
             Approval::Ask => "read-only",
-            Approval::Edits => "workspace-write",
+            Approval::Edits | Approval::Auto => "workspace-write",
             Approval::Full => "danger-full-access",
         });
         if prior.is_none() {

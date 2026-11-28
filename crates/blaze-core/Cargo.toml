@@ -37,5 +37,10 @@ qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 tar = "0.4"
 tower = { version = "0.5", default-features = false, features = ["util"] }
 
+# The agent's web tools: reading pages, and driving the installed browser
+# over its local DevTools socket (no TLS needed for 127.0.0.1).
+scraper = "0.23"
+tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect", "handshake"] }
+
 [dev-dependencies]
 tempfile = "3"

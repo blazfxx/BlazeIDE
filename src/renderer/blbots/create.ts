@@ -7,7 +7,7 @@
 import { el } from '../state';
 import type { BotProfile, BotRoutine, BotsOverview } from '../../shared/ipc';
 import type { ModelEntry } from '../../shared/types';
-import { openSkillsLibrary, toggle } from '../skills/library';
+import { openSkillsLibrary, selectBar, toggle } from '../skills/library';
 import { avatarSvg, BODIES, FACE_COLORS, FACE_COUNT, FRAMES, type AvatarStyle } from './faces';
 
 function t(tag: keyof HTMLElementTagNameMap, cls: string, text?: string): HTMLElement {
@@ -74,7 +74,8 @@ const ENGINES: Array<{ kind: 'blaze' | 'claude' | 'codex' | 'grok'; name: string
 const ACCESS: Array<{ v: BotProfile['approval']; name: string; sub: string; icon: string }> = [
   { v: 'ask', name: 'Ask first', sub: 'Asks before every edit and every command. Safest.', icon: '✋' },
   { v: 'edits', name: 'Edits are fine', sub: 'Changes files on its own, asks before running commands.', icon: '✎' },
-  { v: 'full', name: 'Full access', sub: 'Never asks. Only for folders you trust.', icon: '⚡' },
+  { v: 'auto', name: 'Auto', sub: 'Does everything on its own, except destructive actions: deleting, force-pushing, publishing, system changes, or clicking things like Buy or Delete on a website.', icon: '✦' },
+  { v: 'full', name: 'YOLO', sub: 'Approves everything, including destructive commands. Only for folders you can afford to lose.', icon: '⚡' },
 ];
 
 const SOUL_MAX = 24_000;
@@ -151,6 +152,7 @@ export function openBotEditor(opts: {
     mode: seed.mode === 'ask' ? 'ask' : 'agent',
     folder: seed.folder ?? '',
     computer: !!seed.computer,
+    web: seed.web ?? true,
     skills: [...(seed.skills ?? [])] as string[],
     routines: ((seed.routines ?? []) as BotRoutine[]).map((r) => ({ ...r, schedule: { ...r.schedule } })) as BotRoutine[],
     memory: opts.memory ?? '',
@@ -421,7 +423,13 @@ export function openBotEditor(opts: {
         list.appendChild(t('div', 'bbe-card-sub', 'Your library is empty. Open the library to import your Claude Code, Codex or OpenCode skills, add a starter, or write one.'));
         return;
       }
-      for (const s of all.filter((x) => `${x.name} ${x.description}`.toLowerCase().includes(skillQuery.toLowerCase()))) {
+      const shown = all.filter((x) => `${x.name} ${x.description}`.toLowerCase().includes(skillQuery.toLowerCase()));
+      list.appendChild(selectBar(shown.length, shown.filter((x) => st.skills.includes(x.name)).length, all.filter((x) => st.skills.includes(x.name)).length, (every) => {
+        const names = shown.map((x) => x.name);
+        st.skills = every ? [...new Set([...st.skills, ...names])] : st.skills.filter((n) => !names.includes(n));
+        fill();
+      }));
+      for (const s of shown) {
         const on = st.skills.includes(s.name);
         const r = el('div', `skl-row pick${on ? ' on' : ''}`);
         const mid = el('div', 'skl-mid');
@@ -536,6 +544,13 @@ export function openBotEditor(opts: {
     pick.addEventListener('click', () => void window.void.fsOpenFolder().then((p) => { if (p) { st.folder = p; f.value = p; } }));
     row.append(f, pick);
     c.appendChild(row);
+    const net = card();
+    const netLine = el('div', 'bbe-split');
+    const netText = el('div', '');
+    netText.append(t('div', 'bbe-card-title', 'Web browsing'), t('div', 'bbe-card-sub', 'Search the web, read pages and use a hidden browser (your Chrome or Edge, with none of your logins). Public websites only.'));
+    const netSwitch = toggle(st.web, 'Web browsing', (v) => { st.web = v; draw(); });
+    netLine.append(netText, netSwitch);
+    net.appendChild(netLine);
     const comp = card();
     const line = el('div', 'bbe-split');
     const tx = el('div', '');
@@ -605,7 +620,7 @@ export function openBotEditor(opts: {
       face: useDrawn ? st.face || 1 : 0, body: useDrawn ? st.body || 'bot' : '', frame: st.frame, features: st.features, image: st.image,
       avatar: (st.avatar || name.slice(0, 1).toUpperCase()).slice(0, 4),
       engine: st.engine === 'blaze' ? { kind: 'blaze' } : { kind: st.engine, bin: opts.bot && opts.bot.engine.kind === st.engine && 'bin' in opts.bot.engine ? opts.bot.engine.bin : null },
-      model: st.engine === 'blaze' ? st.model : '', approval: st.approval, mode: st.mode, folder: st.folder, computer: st.computer, routines: st.routines, skills: st.skills,
+      model: st.engine === 'blaze' ? st.model : '', approval: st.approval, mode: st.mode, folder: st.folder, computer: st.computer, routines: st.routines, skills: st.skills, web: st.web,
     } as BotProfile;
     void opts.onSave(profile, isNew ? (st.memory.trim() ? st.memory : null) : (st.memoryTouched ? st.memory : null))
       .then(close)
