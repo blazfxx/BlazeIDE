@@ -559,7 +559,7 @@ impl App {
                     return self.err("Use /provider add <name> <url>, e.g. /provider add Ollama http://localhost:11434/v1");
                 };
                 let (name, url) = (name.trim().trim_matches('"').to_string(), url.trim().to_string());
-                if let Err(e) = blaze_core::providers::sanitize(blaze_core::providers::CustomProvider { id: String::new(), name: name.clone(), base_url: url.clone(), models: vec![] }) {
+                if let Err(e) = blaze_core::providers::sanitize(blaze_core::providers::CustomProvider { id: String::new(), name: name.clone(), base_url: url.clone(), models: vec![], ..Default::default() }) {
                     return self.err(e.to_string());
                 }
                 if self.s.store.providers().iter().any(|p| p.name.eq_ignore_ascii_case(&name)) {
@@ -1194,7 +1194,7 @@ impl App {
                         None => {
                             kp.busy = true;
                             kp.err.clear();
-                            let p = blaze_core::providers::CustomProvider { id: String::new(), name: kp.name.clone(), base_url: kp.url.clone(), models: vec![] };
+                            let p = blaze_core::providers::CustomProvider { id: String::new(), name: kp.name.clone(), base_url: kp.url.clone(), models: vec![], ..Default::default() };
                             match blaze_core::providers::sanitize(p) {
                                 Ok(p) => self.fetch_provider_models(p, key),
                                 Err(e) => {

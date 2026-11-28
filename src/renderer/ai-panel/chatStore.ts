@@ -32,6 +32,12 @@ export function normModelId(id: string): string {
   return id.toLowerCase().replace(/^payg\//, '').replace(/-trusted$/, '').replace(/(\d)[-.](\d)/g, '$1.$2');
 }
 
+/** Whether pictures would be wasted on a model. For your own providers only a
+ *  clear "text only" counts: when nobody said, pictures are sent. */
+export function cannotSee(m: ModelEntry): boolean {
+  return m.vision === false && (!m.tags.includes('custom') || m.tags.includes('text-only'));
+}
+
 /** Find a model by id, tolerating the Normal/Direct spelling differences. */
 export function findModel(id: string): ModelEntry | undefined {
   return state.models.find((x) => x.id === id) ?? state.models.find((x) => x.kind === 'chat' && normModelId(x.id) === normModelId(id));

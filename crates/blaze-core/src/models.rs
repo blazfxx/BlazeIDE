@@ -86,6 +86,9 @@ pub fn display_name(id: &str) -> String {
     name
 }
 
+/// Tag on a model that is listed but cannot be called until the account has balance.
+pub const NEEDS_BALANCE: &str = "needs-balance";
+
 fn has_tag(tags: &str, t: &str) -> bool {
     tags.split(',').any(|x| x.trim() == t)
 }
@@ -103,8 +106,14 @@ pub fn parse_models(body: &Value) -> Vec<ModelEntry> {
                 "video" => "video",
                 _ => return None,
             };
+            // Down for everyone: hide. Only waiting for balance: keep, marked, so
+            // a user with no balance can still see what exists.
+            let mut needs_balance = false;
             if m.get("available_for_account").and_then(Value::as_bool) == Some(false) {
-                return None;
+                match m.get("unavailable_reason").and_then(Value::as_str) {
+                    Some("insufficient_payg_balance") => needs_balance = true,
+                    _ => return None,
+                }
             }
             // Video rows are listed under a display name ("Seedance 2.0 (image-to-video)");
             // the callable id is in model_id ("payg/seedance-2-0-image-to-video").
@@ -130,7 +139,7 @@ pub fn parse_models(body: &Value) -> Vec<ModelEntry> {
                 free,
                 price_in: if free { 0.0 } else if flat { num("min_charge_usd") } else { num("price_in_per_m") },
                 price_out: if free { 0.0 } else { num("price_out_per_m") },
-                tags: tags_raw.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect(),
+                tags: tags_raw.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).chain(needs_balance.then(|| NEEDS_BALANCE.to_string())).collect(),
                 id,
             })
         })
@@ -146,8 +155,8 @@ pub async fn fetch_models(http: &reqwest::Client, api_base: &str, api_key: Optio
     // Normal and Direct list the same models under slightly different ids
     // (gpt-6-1-sol vs gpt-6.1-sol), so ask for the list the requests will use.
     let section = match routing {
-        "normal" | "cheapest" => "?section=normal",
-        "direct" => "?section=direct",
+        // Direct was retired; "trusted" is Normal routing with a provider header.
+        "normal" | "cheapest" | "fastest" | "trusted" | "direct" => "?section=normal",
         _ => "",
     };
     let mut req = http.get(format!("{api_base}/paid/v1/models{section}")).timeout(Duration::from_secs(15));
@@ -185,6 +194,8 @@ const PREFERRED_COMPLETION_MODELS: &[&str] = &["glm-5.3", "free/glm-5.3", "free/
 /// chosen one: a very cheap fast model first (a suggestion costs a fraction
 /// of a cent), then free ones if that fails (e.g. no balance).
 pub fn completion_candidates(models: &[ModelEntry]) -> Vec<String> {
+    let callable: Vec<ModelEntry> = models.iter().filter(|m| !m.tags.iter().any(|t| t == NEEDS_BALANCE)).cloned().collect();
+    let models = &callable[..];
     PREFERRED_COMPLETION_MODELS
         .iter()
         .filter(|p| models.iter().any(|m| m.id == **p && m.kind == "chat"))
@@ -223,6 +234,8 @@ pub fn image_data_url(bytes: &[u8]) -> Option<String> {
 }
 
 pub fn image_candidates(models: &[ModelEntry], wanted: &str) -> Vec<String> {
+    let callable: Vec<ModelEntry> = models.iter().filter(|m| !m.tags.iter().any(|t| t == NEEDS_BALANCE)).cloned().collect();
+    let models = &callable[..];
     let usable = |id: &str| models.iter().any(|m| m.id == id && m.kind == "image") && !is_edit_model(id);
     let mut out: Vec<String> = Vec::new();
     if !wanted.is_empty() && usable(wanted) {
@@ -368,6 +381,8 @@ pub fn video_takes_image(id: &str) -> bool {
 }
 
 pub fn video_candidates(models: &[ModelEntry], wanted: &str, with_image: bool) -> Vec<String> {
+    let callable: Vec<ModelEntry> = models.iter().filter(|m| !m.tags.iter().any(|t| t == NEEDS_BALANCE)).cloned().collect();
+    let models = &callable[..];
     let fits = |id: &str| if with_image { id.contains("image-to-video") } else { id.contains("text-to-video") };
     let has = |id: &str| fits(id) && models.iter().any(|m| m.id == id && m.kind == "video");
     let preferred = if with_image { PREFERRED_IMAGE_VIDEO } else { PREFERRED_TEXT_VIDEO };
@@ -488,19 +503,23 @@ mod tests {
             {"id":"veo-3","type":"video","min_charge_usd":0.4,"tags":"payg,flat"},
             {"id":"tts-1","type":"audio"},
             {"id":"tokv2/x","type":"chat","tags":"tokv2"},
-            {"id":"locked","type":"chat","available_for_account":false}
+            {"id":"locked","type":"chat","available_for_account":false},
+            {"id":"claude-sonnet-5-5","type":"chat","available_for_account":false,"unavailable_reason":"insufficient_payg_balance","tags":"payg"},
+            {"id":"down","type":"chat","available_for_account":false,"unavailable_reason":"model_currently_down"}
         ]});
         let m = parse_models(&body);
-        assert_eq!(m.iter().map(|x| x.id.as_str()).collect::<Vec<_>>(), vec!["gpt-image-2", "veo-3", "glm-5.3", "free/glm-5.3"]);
+        assert_eq!(m.iter().map(|x| x.id.as_str()).collect::<Vec<_>>(), vec!["claude-sonnet-5-5", "gpt-image-2", "veo-3", "glm-5.3", "free/glm-5.3"]);
+        assert!(m.iter().find(|x| x.id == "claude-sonnet-5-5").unwrap().tags.contains(&NEEDS_BALANCE.to_string()), "kept, marked");
         let vids = parse_models(&json!({"data":[{"id":"Seedance 2.0 (image-to-video)","model_id":"payg/seedance-2-0-image-to-video","type":"video","min_charge_usd":0.29,"tags":"payg,flat"}]}));
         assert_eq!((vids[0].id.as_str(), vids[0].display_name.as_str()), ("seedance-2-0-image-to-video", "Seedance 2.0 (image-to-video)"));
         assert_eq!(video_candidates(&vids, "", true), vec!["seedance-2-0-image-to-video"]);
         assert!(video_candidates(&vids, "", false).is_empty());
         assert!(video_takes_image("kling-o3-standard-reference-to-video") && !video_takes_image("kling-o3-standard-text-to-video"));
-        assert!(m[3].free && m[3].price_in == 0.0);
-        assert_eq!(m[1].kind, "video");
-        assert!(!m[2].free);
-        assert_eq!(m[0].price_in, 0.005);
+        let by = |id: &str| m.iter().find(|x| x.id == id).unwrap();
+        assert!(by("free/glm-5.3").free && by("free/glm-5.3").price_in == 0.0);
+        assert_eq!(by("veo-3").kind, "video");
+        assert!(!by("glm-5.3").free);
+        assert_eq!(by("gpt-image-2").price_in, 0.005);
         assert_eq!(completion_candidates(&m), vec!["glm-5.3", "free/glm-5.3"]);
         assert_eq!(pick_image_model(&m).as_deref(), Some("gpt-image-2"));
         let imgs = vec![

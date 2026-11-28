@@ -19,7 +19,8 @@ export interface SessionPublic {
 }
 
 /** BlazeAPI routing for chat: '' = the account's own setting. */
-export type AIRouting = '' | 'normal' | 'direct' | 'cheapest';
+/** 'direct' is the retired Direct routing; it now means 'trusted'. */
+export type AIRouting = '' | 'normal' | 'trusted' | 'direct' | 'cheapest' | 'fastest';
 
 /** A BlazeAPI supplier (codename) that serves a model. */
 export interface SupplierEntry {
@@ -52,6 +53,10 @@ export interface CustomProvider {
   name: string;
   baseUrl: string;
   models: string[];
+  /** Endpoint: '' (find out), 'chat', 'responses' or 'anthropic'. */
+  wire?: string;
+  /** The models that can see images. */
+  vision?: string[];
   hasKey: boolean;
 }
 
@@ -60,6 +65,9 @@ export interface ProviderInput {
   name: string;
   baseUrl: string;
   models: string[];
+  wire?: string;
+  /** The user's own "sees images" choices, by model. */
+  vision?: Record<string, boolean>;
   /** Omit to keep the stored key; empty string removes it. */
   apiKey?: string;
 }

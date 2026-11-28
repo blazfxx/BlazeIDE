@@ -12,6 +12,7 @@ import { joinProjectPath } from '../../shared/applyDiff';
 import {
   COMPACT_INSTRUCTION,
   findModel,
+  cannotSee,
   activeContextWindow,
   activeModelLabel,
   deriveTitle,
@@ -341,7 +342,7 @@ export function createController(view: ChatView, editor: EditorArea): Controller
       // results cannot carry images on most providers).
       if (shots.length > 0) {
         const m = findModel(state.settings.selectedModel);
-        const blind = !!m && !m.tags.includes('custom') && m.vision === false;
+        const blind = !!m && cannotSee(m);
         conversation.push(blind
           ? { role: 'user', content: `[${shots.length} browser screenshot(s) were taken, but ${m?.displayName ?? 'this model'} cannot see images. Use the console action and the code to check the page instead.]` }
           : { role: 'user', content: `[Browser screenshot(s) you just took: ${shots.map((s) => s.label).join('; ')}. Look at them carefully and fix what is wrong before finishing.]`, images: shots.map((s) => s.url) });

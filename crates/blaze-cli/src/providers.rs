@@ -25,7 +25,12 @@ pub enum ProvidersCmd {
         /// Model ids to offer, comma separated (default: ask the provider's /models).
         #[arg(long = "models", value_delimiter = ',')]
         models: Vec<String>,
+        /// Which endpoint it speaks: auto (default), chat, responses or anthropic.
+        #[arg(long, default_value = "auto")]
+        wire: String,
     },
+    /// Choose which endpoint a provider speaks: auto, chat, responses or anthropic.
+    Wire { provider: String, wire: String },
     /// Set or replace a provider's API key (read from stdin).
     Key { provider: String },
     /// Refresh a provider's model list from its /models endpoint.
@@ -54,7 +59,7 @@ pub async fn run(s: &mut Session, cmd: ProvidersCmd) -> Result<(), String> {
             }
             for p in list {
                 let has_key = config::load_provider_key(&p.id).is_some();
-                println!("{}  {}  ({} models{})", p.name, p.base_url, p.models.len(), if has_key { ", key saved" } else { ", no key" });
+                println!("{}  {}  ({} models, {}{})", p.name, p.base_url, p.models.len(), if p.wire.is_empty() { "endpoint auto" } else { p.wire.as_str() }, if has_key { ", key saved" } else { ", no key" });
                 for m in p.models.iter().take(12) {
                     println!("    {}", providers::model_id(&p.id, m));
                 }
@@ -63,9 +68,17 @@ pub async fn run(s: &mut Session, cmd: ProvidersCmd) -> Result<(), String> {
             println!("Requests to these go straight to the provider, not through BlazeAPI.");
             Ok(())
         }
-        ProvidersCmd::Add { name, base_url, key, models } => {
+        ProvidersCmd::Wire { provider, wire } => {
+            let mut p = find(s, &provider).ok_or("No such provider (see blaze providers list)")?;
+            p.wire = wire;
+            let p = providers::sanitize(p).map_err(|e| e.to_string())?;
+            s.store.upsert_provider(p.clone()).map_err(|e| e.to_string())?;
+            println!("{} now uses {}.", p.name, if p.wire.is_empty() { "automatic endpoint detection" } else { p.wire.as_str() });
+            Ok(())
+        }
+        ProvidersCmd::Add { name, base_url, key, models, wire } => {
             let key = if key { Some(read_key()?) } else { None };
-            let mut p = providers::sanitize(CustomProvider { id: String::new(), name, base_url, models }).map_err(|e| e.to_string())?;
+            let mut p = providers::sanitize(CustomProvider { name, base_url, models, wire, ..Default::default() }).map_err(|e| e.to_string())?;
             if p.models.is_empty() {
                 match providers::fetch_models(&s.http_custom, &p.base_url, key.as_deref()).await {
                     Ok(m) if !m.is_empty() => p.models = m,
@@ -73,6 +86,9 @@ pub async fn run(s: &mut Session, cmd: ProvidersCmd) -> Result<(), String> {
                     Err(e) => eprintln!("Could not list its models ({e}); add them with --models a,b."),
                 }
                 p = providers::sanitize(p).map_err(|e| e.to_string())?;
+            }
+            if let Ok(catalog) = providers::fetch_catalog(&s.http_custom, &p.base_url, key.as_deref()).await {
+                providers::apply_catalog(&mut p, &catalog);
             }
             if let Some(k) = &key {
                 config::save_secret(&format!("provider-{}", p.id), k)?;
@@ -93,8 +109,10 @@ pub async fn run(s: &mut Session, cmd: ProvidersCmd) -> Result<(), String> {
         ProvidersCmd::Models { provider } => {
             let mut p = find(s, &provider).ok_or("No such provider (see blaze providers list)")?;
             let key = config::load_provider_key(&p.id);
-            p.models = providers::fetch_models(&s.http_custom, &p.base_url, key.as_deref()).await.map_err(|e| e.to_string())?;
-            let p = providers::sanitize(p).map_err(|e| e.to_string())?;
+            let catalog = providers::fetch_catalog(&s.http_custom, &p.base_url, key.as_deref()).await.map_err(|e| e.to_string())?;
+            p.models = catalog.iter().map(|(id, _)| id.clone()).take(500).collect();
+            let mut p = providers::sanitize(p).map_err(|e| e.to_string())?;
+            providers::apply_catalog(&mut p, &catalog);
             s.store.upsert_provider(p.clone()).map_err(|e| e.to_string())?;
             println!("{} now offers {} models.", p.name, p.models.len());
             Ok(())

@@ -386,12 +386,12 @@ fn setting_str(state: &AppState, key: &str) -> String {
 /// The routing choice for BlazeAPI requests: "normal", "direct", "cheapest"
 /// (owner only) or "" (the account's own setting).
 fn routing(state: &AppState) -> String {
-    let admin = state.store.account().and_then(|a| a.get("username").and_then(Value::as_str).map(is_admin_name)).unwrap_or(false);
     match setting_str(state, "aiRouting").as_str() {
         "normal" => "normal".into(),
-        "direct" => "direct".into(),
-        "cheapest" if admin => "cheapest".into(),
-        "cheapest" => "normal".into(),
+        // Direct was retired: it became Normal routing with the trusted sellers.
+        "direct" | "trusted" => "trusted".into(),
+        "cheapest" => "cheapest".into(),
+        "fastest" => "fastest".into(),
         _ => String::new(),
     }
 }
@@ -404,7 +404,7 @@ pub(crate) fn routing_for(state: &AppState) -> String {
 /// user added; everything else is BlazeAPI.
 enum Route {
     Blaze { key: Option<String> },
-    Custom { base: String, key: Option<String>, model: String },
+    Custom { base: String, key: Option<String>, model: String, wire: String },
 }
 
 fn route_for(state: &AppState, model: &str) -> Result<Route, String> {
@@ -412,7 +412,7 @@ fn route_for(state: &AppState, model: &str) -> Result<Route, String> {
         None => Ok(Route::Blaze { key: state.api_key() }),
         Some((pid, m)) => {
             let p = state.store.providers().into_iter().find(|p| p.id == pid).ok_or("That custom provider was removed. Pick another model.")?;
-            Ok(Route::Custom { base: p.base_url, key: secrets::load_provider_key(pid), model: m.to_string() })
+            Ok(Route::Custom { base: p.base_url, key: secrets::load_provider_key(pid), model: m.to_string(), wire: p.wire })
         }
     }
 }
@@ -488,13 +488,13 @@ pub async fn ai_send(app: AppHandle, window: WebviewWindow, state: State<'_, App
             analytics::track(&app, "ai_request", Some(&req.model));
             ai::stream_chat(&state.http, &ai::Target::blaze_routed(&state.v1_base, key, &routing(&state)), &req, cancel, |ev| send(with_id(&ev))).await
         }
-        Route::Custom { base, key, model } => {
+        Route::Custom { base, key, model, wire } => {
             analytics::track(&app, "ai_request", None);
             // Third-party servers may reject OpenAI's newer parameters, so
             // send the plain request.
             req.model = model.clone();
             req.reasoning_effort = Some("off".into());
-            ai::stream_chat(&state.http_custom, &ai::Target::custom(base, key.as_deref()), &req, cancel, |ev| send(with_id(&ev))).await
+            ai::stream_chat(&state.http_custom, &ai::Target::custom(base, key.as_deref()).with_wire(wire), &req, cancel, |ev| send(with_id(&ev))).await
         }
     };
     state.ai_requests.lock().expect("ai lock").remove(&id);
@@ -546,6 +546,7 @@ async fn load_models(state: &AppState, force: bool) -> (Vec<models::ModelEntry>,
             }
         }
     };
+    providers::learn_missing(&state.store, &state.http_custom, secrets::load_provider_key).await;
     for p in state.store.providers() {
         list.extend(providers::entries(&p));
     }
@@ -607,7 +608,7 @@ pub async fn ai_complete(state: State<'_, AppState>, req: CompleteReq) -> CmdRes
         let out = match route_for(&state, &model)? {
             Route::Blaze { key: Some(key) } => ai::complete(&state.http, &ai::Target::blaze_routed(&state.v1_base, &key, &routing(&state)), &model, name, prefix, suffix).await,
             Route::Blaze { key: None } => return Ok(String::new()),
-            Route::Custom { base, key, model } => ai::complete(&state.http_custom, &ai::Target::custom(&base, key.as_deref()), &model, name, prefix, suffix).await,
+            Route::Custom { base, key, model, .. } => ai::complete(&state.http_custom, &ai::Target::custom(&base, key.as_deref()), &model, name, prefix, suffix).await,
         };
         if let Ok(text) = out {
             return Ok(text);
@@ -790,12 +791,17 @@ pub struct ProviderView {
     name: String,
     base_url: String,
     models: Vec<String>,
+    /// The endpoint setting: "" (auto), "chat", "responses" or "anthropic".
+    wire: String,
+    /// The models that can see images.
+    vision: Vec<String>,
     has_key: bool,
 }
 
 fn view(p: providers::CustomProvider) -> ProviderView {
     let has_key = secrets::load_provider_key(&p.id).is_some();
-    ProviderView { id: p.id, name: p.name, base_url: p.base_url, models: p.models, has_key }
+    let vision = p.models.iter().filter(|m| providers::sees_images(&p, m)).cloned().collect();
+    ProviderView { id: p.id, name: p.name, base_url: p.base_url, models: p.models, wire: p.wire, vision, has_key }
 }
 
 #[tauri::command]
@@ -810,13 +816,25 @@ pub struct ProviderInput {
     name: String,
     base_url: String,
     models: Vec<String>,
+    #[serde(default)]
+    wire: String,
+    /// The user's own "sees images" choices, by model.
+    #[serde(default)]
+    vision: std::collections::BTreeMap<String, bool>,
     /// None leaves the stored key alone; Some("") removes it.
     api_key: Option<String>,
 }
 
 #[tauri::command]
-pub fn providers_save(state: State<'_, AppState>, input: ProviderInput) -> CmdResult<ProviderView> {
-    let p = providers::sanitize(providers::CustomProvider { id: input.id.unwrap_or_default(), name: input.name, base_url: input.base_url, models: input.models }).map_err(err)?;
+pub async fn providers_save(state: State<'_, AppState>, input: ProviderInput) -> CmdResult<ProviderView> {
+    let id = input.id.unwrap_or_default();
+    let mut caps = state.store.providers().into_iter().find(|p| p.id == id).map(|p| p.caps).unwrap_or_default();
+    for (model, sees) in input.vision {
+        let c = caps.entry(model).or_default();
+        c.vision = Some(sees);
+        c.manual = true;
+    }
+    let mut p = providers::sanitize(providers::CustomProvider { id, name: input.name, base_url: input.base_url, models: input.models, wire: input.wire, caps }).map_err(err)?;
     if let Some(key) = input.api_key {
         let key = key.trim();
         if key.is_empty() {
@@ -826,6 +844,11 @@ pub fn providers_save(state: State<'_, AppState>, input: ProviderInput) -> CmdRe
         } else {
             secrets::save_provider_key(&p.id, key)?;
         }
+    }
+    // Ask the endpoint what its models can do; saving works without it.
+    let key = secrets::load_provider_key(&p.id);
+    if let Ok(Ok(catalog)) = tokio::time::timeout(std::time::Duration::from_secs(8), providers::fetch_catalog(&state.http_custom, &p.base_url, key.as_deref())).await {
+        providers::apply_catalog(&mut p, &catalog);
     }
     state.store.upsert_provider(p.clone()).map_err(err)?;
     Ok(view(p))

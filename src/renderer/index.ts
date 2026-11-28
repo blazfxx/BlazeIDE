@@ -164,6 +164,11 @@ async function boot(): Promise<void> {
   // Load settings before building the UI that reads them, and apply the
   // theme/background immediately so there's no flash of the wrong look.
   state.settings = await window.void.settingsGet();
+  if (state.settings.aiRouting === 'direct') {
+    // Direct was retired: it is Trusted now.
+    state.settings.aiRouting = 'trusted';
+    void window.void.settingsSet({ aiRouting: 'trusted' });
+  }
   applyAppearance(state.settings);
   applyAmbient(state.settings);
 

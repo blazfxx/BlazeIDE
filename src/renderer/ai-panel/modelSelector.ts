@@ -82,6 +82,10 @@ export function initModelSelector(host: HTMLElement): void {
     row.appendChild(el('span', 'dd-name', escapeHtml(m.displayName)));
     if (m.free) row.appendChild(el('span', 'badge badge-free', 'FREE'));
     if (m.vision && m.kind === 'chat') row.appendChild(el('span', 'badge', 'VISION'));
+    if (m.tags.includes('needs-balance')) {
+      row.appendChild(el('span', 'badge badge-balance', 'NEEDS BALANCE'));
+      row.title += ' · add balance in your BlazeAPI dashboard to use it';
+    }
     if (price) row.appendChild(el('span', 'dd-ctx', escapeHtml(price)));
     if (m.kind === 'chat') row.appendChild(el('span', 'dd-ctx', ctxLabel(m.contextWindow)));
     row.addEventListener('click', () => selectModel(m));

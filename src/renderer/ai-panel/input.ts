@@ -1,6 +1,6 @@
 // AI panel input area: mode pills, auto-growing textarea, send/cancel button.
 
-import { findModel } from './chatStore';
+import { cannotSee, findModel } from './chatStore';
 import type { AIMode, ApprovalLevel, ElementComment, FileNode, ReasoningEffort } from '../../shared/types';
 import { APPROVALS, approvalLevel, setApproval } from './approval';
 import { REASONING_LEVELS } from '../../shared/types';
@@ -156,7 +156,7 @@ export function initInput(host: HTMLElement, controller: Controller): void {
       imageChips.appendChild(chip);
     });
     const m = findModel(state.settings.selectedModel);
-    if (images.length && m && !m.tags.includes('custom') && m.vision === false) {
+    if (images.length && m && cannotSee(m)) {
       imageChips.appendChild(el('span', 'ai-image-warn', `${escapeHtml(m.displayName)} cannot see images: pick a vision model`));
     }
   }

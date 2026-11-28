@@ -96,6 +96,7 @@ impl Session {
             }
         };
         // Your own providers work even when BlazeAPI cannot be reached.
+        blaze_core::providers::learn_missing(&self.store, &self.http_custom, config::load_provider_key).await;
         for p in self.store.providers() {
             list.extend(blaze_core::providers::entries(&p));
         }

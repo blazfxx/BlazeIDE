@@ -29,6 +29,7 @@ pub mod store;
 pub mod tools;
 pub mod watch;
 pub mod web;
+pub mod wire;
 pub mod webproxy;
 
 pub use error::{Error, Result};

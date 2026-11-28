@@ -9,8 +9,9 @@ import { normModelId } from './chatStore';
 export const ROUTING_CHOICES: Array<{ value: AIRouting; label: string; hint: string; admin?: boolean }> = [
   { value: '', label: 'Account', hint: 'Use the routing set on your BlazeAPI account' },
   { value: 'normal', label: 'Normal', hint: 'Normal routing: the most models and the lowest prices' },
-  { value: 'direct', label: 'Direct', hint: 'Direct (trusted) routing: model makers and trusted resellers only' },
-  { value: 'cheapest', label: 'Cheapest', hint: 'Owner only: Normal routing, cheapest working supplier first', admin: true },
+  { value: 'trusted', label: 'Trusted', hint: 'Normal routing, served by the trusted vendors and resellers' },
+  { value: 'cheapest', label: 'Cheapest', hint: 'Normal routing, the cheapest working supplier first' },
+  { value: 'fastest', label: 'Fastest', hint: 'Normal routing, the supplier that answers first' },
 ];
 
 export function routingChoices(): typeof ROUTING_CHOICES {
@@ -19,6 +20,8 @@ export function routingChoices(): typeof ROUTING_CHOICES {
 
 /** Switch routing, reload the model list for it, keep the same model selected. */
 export async function setRouting(r: AIRouting): Promise<void> {
+  // Direct was retired; it is Trusted now.
+  if (r === 'direct') r = 'trusted';
   state.settings.aiRouting = r;
   await window.void.settingsSet({ aiRouting: r });
   const models = await window.void.aiRefreshModels();

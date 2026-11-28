@@ -654,3 +654,12 @@ textarea.bbe-input { resize: vertical; }
 .pv-empty > div { max-width: 380px; }
 .pv-empty-title { font-size: 16px; font-weight: 650; color: var(--text-primary); }
 .ai-picks { display: flex; gap: 6px; margin-left: auto; }
+.badge-balance { border-style: dashed; color: var(--text-secondary); }
+.prov-wire { display: flex; flex-direction: column; gap: 6px; }
+.prov-wire-note { font-size: 12px; line-height: 1.45; color: var(--text-secondary); }
+.prov-vision { display: flex; flex-direction: column; gap: 6px; }
+.prov-vision-note, .prov-vision-more { font-size: 12px; line-height: 1.45; color: var(--text-secondary); }
+.prov-vision-list { max-height: 190px; overflow-y: auto; border: 1px solid var(--border-soft); border-radius: 10px; padding: 4px; }
+.prov-vision-row { display: flex; align-items: center; gap: 10px; padding: 5px 8px; border-radius: 7px; font-family: var(--font-mono); font-size: 12px; cursor: pointer; overflow-wrap: anywhere; }
+.prov-vision-row:hover { background: var(--bg-hover); }
+.prov-row-sub { white-space: normal; overflow-wrap: anywhere; }

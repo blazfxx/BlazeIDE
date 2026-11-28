@@ -12,6 +12,7 @@ use tokio_util::sync::CancellationToken;
 use crate::error::{Error, Result};
 use crate::prompts::system_prompt;
 use crate::tools::tools_for_opts;
+use crate::wire::{self, StreamParser, Wire};
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Default)]
 #[serde(rename_all = "camelCase")]
@@ -224,16 +225,13 @@ pub fn build_body(req: &AiRequest) -> Value {
 }
 
 #[derive(Default)]
-struct Pending {
-    id: String,
-    name: String,
-    args: String,
-    extra: Option<Map<String, Value>>,
+pub(crate) struct Pending {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) args: String,
+    pub(crate) extra: Option<Map<String, Value>>,
 }
 
-fn refuses_images(error: &str) -> bool {
-    ["Unable to download the file", "Only HTTPS URLs are supported"].iter().any(|k| error.contains(k))
-}
 
 fn without_images(messages: &mut [ChatMessage]) {
     for m in messages {
@@ -329,52 +327,83 @@ impl SseParser {
 
     /// Completed tool calls, in index order. Call once the stream ends.
     pub fn finish(&mut self) -> Vec<StreamEvent> {
-        std::mem::take(&mut self.pending)
-            .into_values()
-            .filter(|p| !p.name.is_empty())
-            .map(|p| StreamEvent::ToolCall {
-                tool_call: ToolCall {
-                    id: if p.id.is_empty() { format!("call_{}", &uuid::Uuid::new_v4().simple().to_string()[..8]) } else { p.id },
-                    name: p.name,
-                    arguments: if p.args.is_empty() { "{}".into() } else { p.args },
-                    extra: p.extra,
-                },
-            })
-            .collect()
+        finish_calls(std::mem::take(&mut self.pending))
+    }
+}
+
+pub(crate) fn finish_calls(pending: BTreeMap<u32, Pending>) -> Vec<StreamEvent> {
+    pending
+        .into_values()
+        .filter(|p| !p.name.is_empty())
+        .map(|p| StreamEvent::ToolCall {
+            tool_call: ToolCall {
+                id: if p.id.is_empty() { format!("call_{}", &uuid::Uuid::new_v4().simple().to_string()[..8]) } else { p.id },
+                name: p.name,
+                arguments: if p.args.is_empty() { "{}".into() } else { p.args },
+                extra: p.extra,
+            },
+        })
+        .collect()
+}
+
+impl StreamParser for SseParser {
+    fn feed(&mut self, bytes: &[u8], out: &mut Vec<StreamEvent>) {
+        SseParser::feed(self, bytes, out)
+    }
+    fn finish(&mut self) -> Vec<StreamEvent> {
+        SseParser::finish(self)
+    }
+    fn take_error(&mut self) -> Option<String> {
+        self.error.take()
     }
 }
 
 /// Where a chat request goes: BlazeAPI, or a user-added OpenAI-compatible
 /// provider. Only BlazeAPI gets the product-specific headers and messages.
 pub struct Target<'a> {
+    /// The chat-completions URL (editor autocomplete always uses it).
     pub url: String,
     pub key: Option<&'a str>,
     pub branded: bool,
     /// Extra headers (BlazeAPI routing choice).
     pub headers: Vec<(&'static str, String)>,
+    /// The provider's base URL (other endpoints are built from it).
+    pub base: String,
+    /// The endpoint the provider speaks; None = find out (custom providers).
+    pub wire: Option<Wire>,
 }
 
-/// BlazeAPI routing headers for a routing choice: "normal", "direct",
-/// "cheapest" (Normal routing, cheapest supplier first); anything else = the
-/// account's own setting (no header).
+/// BlazeAPI routing headers for a routing choice: "normal" (Normal routing),
+/// "trusted" (Normal routing, the trusted vendors' sellers: what "direct"
+/// became), "cheapest" and "fastest" (Normal routing, ordered by price or
+/// speed); anything else = the account's own setting (no header).
 pub fn routing_headers(routing: &str) -> Vec<(&'static str, String)> {
     match routing {
         "normal" => vec![("X-Blaze-Routing", "basic".into())],
-        "direct" => vec![("X-Blaze-Routing", "trusted".into())],
+        "direct" | "trusted" => vec![("X-Blaze-Routing", "basic".into()), ("X-Blaze-Provider", "trusted".into())],
         "cheapest" => vec![("X-Blaze-Routing", "basic".into()), ("X-Blaze-Provider", "cheapest".into())],
+        "fastest" => vec![("X-Blaze-Routing", "basic".into()), ("X-Blaze-Provider", "fastest".into())],
         _ => Vec::new(),
     }
 }
 
 impl<'a> Target<'a> {
     pub fn blaze(api_base: &str, key: &'a str) -> Self {
-        Target { url: format!("{api_base}/paid/v1/chat/completions"), key: Some(key), branded: true, headers: Vec::new() }
+        let base = format!("{api_base}/paid/v1");
+        Target { url: format!("{base}/chat/completions"), key: Some(key), branded: true, headers: Vec::new(), base, wire: Some(Wire::Chat) }
     }
     pub fn blaze_routed(api_base: &str, key: &'a str, routing: &str) -> Self {
         Target { headers: routing_headers(routing), ..Self::blaze(api_base, key) }
     }
     pub fn custom(base_url: &str, key: Option<&'a str>) -> Self {
-        Target { url: format!("{}/chat/completions", base_url.trim_end_matches('/')), key, branded: false, headers: Vec::new() }
+        let base = base_url.trim_end_matches('/').to_string();
+        Target { url: format!("{base}/chat/completions"), key, branded: false, headers: Vec::new(), base, wire: None }
+    }
+    /// A provider's endpoint setting: "chat", "responses", "anthropic", or
+    /// "auto" / "" to find out.
+    pub fn with_wire(mut self, setting: &str) -> Self {
+        self.wire = Wire::parse(setting);
+        self
     }
 }
 
@@ -396,6 +425,97 @@ fn friendly_http_error(status: u16, text: &str, branded: bool) -> Error {
     Error::Http { status, message }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Effort {
+    /// As the user chose.
+    Normal,
+    /// "none": for providers that refuse tools together with thinking.
+    NoThinking,
+    /// Not sent at all: the provider refused the field.
+    Omitted,
+}
+
+/// What a request is sent as. Starts from the provider's setting and is
+/// adjusted by what the provider says back.
+#[derive(Clone, Debug)]
+struct Plan {
+    wire: Wire,
+    effort: Effort,
+    echo_dropped: bool,
+    images_dropped: bool,
+    tried: Vec<Wire>,
+    /// The wire was changed because of a thinking/tools refusal, so if the new
+    /// endpoint does not exist, go back and send "none" instead.
+    from_effort: bool,
+    cheapest: bool,
+}
+
+type Learned = std::collections::HashMap<String, (Wire, Effort)>;
+
+/// What each (provider, model) was found to need, for the rest of this run.
+fn learned() -> &'static std::sync::Mutex<Learned> {
+    static L: std::sync::OnceLock<std::sync::Mutex<Learned>> = std::sync::OnceLock::new();
+    L.get_or_init(Default::default)
+}
+
+fn make_body(req: &AiRequest, plan: &Plan) -> Result<Vec<u8>> {
+    let mut r = req.clone();
+    r.no_reasoning_echo = plan.echo_dropped;
+    if plan.images_dropped {
+        without_images(&mut r.messages);
+    }
+    let mut chat = build_body(&r);
+    match plan.effort {
+        Effort::Normal => {}
+        Effort::NoThinking => chat["reasoning_effort"] = json!("none"),
+        Effort::Omitted => {
+            chat.as_object_mut().map(|o| o.remove("reasoning_effort"));
+        }
+    }
+    let body = match plan.wire {
+        Wire::Chat => chat,
+        Wire::Responses => wire::to_responses(&chat),
+        Wire::Anthropic => wire::to_anthropic(&chat),
+    };
+    Ok(serde_json::to_vec(&body)?)
+}
+
+fn refuses_images(error: &str) -> bool {
+    ["Unable to download the file", "Only HTTPS URLs are supported", "does not accept image input", "does not support image", "image input is not supported"].iter().any(|k| error.to_ascii_lowercase().contains(&k.to_ascii_lowercase()))
+}
+
+fn mentions_effort(low: &str) -> bool {
+    low.contains("reasoning_effort") || low.contains("reasoning effort") || low.contains("output_config")
+}
+
+/// A provider that only allows tools with thinking on another endpoint, e.g.
+/// "Function tools with reasoning_effort are not supported ... in
+/// /v1/chat/completions. Use /v1/responses or set reasoning_effort to 'none'".
+fn effort_conflict(low: &str) -> bool {
+    mentions_effort(low) && (low.contains("tools") || low.contains("function")) && (low.contains("not supported") || low.contains("unsupported") || low.contains("use /v1/"))
+}
+
+/// Which endpoint to move to, for providers set to "auto".
+fn next_wire(plan: &Plan, target: &Target<'_>, status: u16, low: &str) -> Option<Wire> {
+    if target.branded || target.wire.is_some() {
+        return None;
+    }
+    let fresh = |w: Wire| plan.wire != w && !plan.tried.contains(&w);
+    if matches!(status, 400 | 404 | 405 | 422) {
+        if (low.contains("/v1/responses") || low.contains("responses api") || low.contains("use the responses")) && fresh(Wire::Responses) {
+            return Some(Wire::Responses);
+        }
+        if (low.contains("/v1/messages") || low.contains("messages api")) && fresh(Wire::Anthropic) {
+            return Some(Wire::Anthropic);
+        }
+    }
+    // The route does not exist on this server.
+    if matches!(status, 404 | 405) && !low.contains("model") {
+        return [Wire::Responses, Wire::Anthropic].into_iter().find(|w| fresh(*w));
+    }
+    None
+}
+
 /// Run one streaming request. Events go to `emit`; returns when the stream
 /// ends, fails, or `cancel` fires (cancel returns Ok).
 pub async fn stream_chat(
@@ -406,13 +526,28 @@ pub async fn stream_chat(
     mut emit: impl FnMut(StreamEvent),
 ) -> Result<()> {
     validate(req)?;
-    let mut body = serde_json::to_vec(&build_body(req))?;
+    let memory_key = format!("{}|{}", target.base, req.model);
+    let initial = target.wire.unwrap_or(Wire::Chat);
+    let mut plan = Plan {
+        wire: initial,
+        effort: Effort::Normal,
+        echo_dropped: req.no_reasoning_echo,
+        images_dropped: !req.messages.iter().any(|m| m.images.as_ref().is_some_and(|v| !v.is_empty())),
+        tried: Vec::new(),
+        from_effort: false,
+        cheapest: false,
+    };
+    if let Some((w, e)) = learned().lock().expect("learned").get(&memory_key).copied() {
+        if target.wire.is_none() {
+            plan.wire = w;
+        }
+        plan.effort = e;
+    }
+    let mut body = make_body(req, &plan)?;
     if body.len() > MAX_BODY_BYTES {
         return Err(Error::msg("This conversation is too large to send. Start a new chat."));
     }
-    let url = &target.url;
-    let mut echo_dropped = req.no_reasoning_echo;
-    let mut images_dropped = !req.messages.iter().any(|m| m.images.as_ref().is_some_and(|v| !v.is_empty()));
+    let has_provider_header = target.headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("X-Blaze-Provider"));
 
     // Retry connection failures and 5xx a couple of times, but only before any
     // output has been read, so nothing is ever duplicated.
@@ -422,9 +557,13 @@ pub async fn stream_chat(
         if cancel.is_cancelled() {
             return Ok(());
         }
-        let mut post = http.post(url).header("Content-Type", "application/json").body(body.clone());
+        let url = if plan.wire == Wire::Chat { target.url.clone() } else { plan.wire.url(&target.base) };
+        let mut post = http.post(&url).header("Content-Type", "application/json").body(body.clone());
         if let Some(k) = target.key {
             post = post.bearer_auth(k);
+        }
+        for (k, v) in wire::extra_headers(plan.wire, target.key) {
+            post = post.header(k, v);
         }
         if target.branded {
             post = post.header("X-Client", "blaze-ide");
@@ -432,9 +571,11 @@ pub async fn stream_chat(
         for (k, v) in &target.headers {
             post = post.header(*k, v.as_str());
         }
-        let send = post.send();
+        if plan.cheapest && !has_provider_header {
+            post = post.header("X-Blaze-Provider", "cheapest");
+        }
         let r = tokio::select! {
-            r = send => r,
+            r = post.send() => r,
             _ = cancel.cancelled() => return Ok(()),
         };
         match r {
@@ -448,23 +589,37 @@ pub async fn stream_chat(
             Ok(r) => {
                 let status = r.status().as_u16();
                 let text = r.text().await.unwrap_or_default();
-                // A provider that refuses the echoed thinking: send once more without it.
-                if status == 400 && !echo_dropped && text.contains("reasoning") {
-                    echo_dropped = true;
-                    let mut plain = req.clone();
-                    plain.no_reasoning_echo = true;
-                    body = serde_json::to_vec(&build_body(&plain))?;
-                    attempt += 1;
-                    continue;
+                let low = text.to_ascii_lowercase();
+                let mut changed = true;
+                if plan.from_effort && plan.wire != Wire::Chat && status >= 400 {
+                    // The other endpoint is not there: stay on chat, no thinking.
+                    plan.wire = Wire::Chat;
+                    plan.effort = Effort::NoThinking;
+                    plan.from_effort = false;
+                } else if let Some(next) = next_wire(&plan, target, status, &low) {
+                    plan.tried.push(plan.wire);
+                    plan.from_effort = effort_conflict(&low) || mentions_effort(&low);
+                    plan.wire = next;
+                } else if status == 400 && !plan.echo_dropped && low.contains("reasoning") && !mentions_effort(&low) {
+                    // A provider that refuses the echoed thinking.
+                    plan.echo_dropped = true;
+                } else if status == 400 && plan.effort == Effort::Normal && effort_conflict(&low) {
+                    plan.effort = Effort::NoThinking;
+                } else if status == 400 && plan.effort != Effort::Omitted && mentions_effort(&low) {
+                    plan.effort = Effort::Omitted;
+                } else if status == 400 && !plan.images_dropped && refuses_images(&text) {
+                    // Some gateways cannot pass pictures on. The pictures stay in
+                    // the history, so without this every later message would fail.
+                    plan.images_dropped = true;
+                } else if status == 503 && target.branded && !plan.cheapest && !has_provider_header && low.contains("coming back soon") {
+                    // No seller at the usual price: try the cheapest healthy route.
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    plan.cheapest = true;
+                } else {
+                    changed = false;
                 }
-                // Some gateways cannot pass pictures on. The pictures stay in
-                // the history, so without this every later message would fail.
-                if status == 400 && !images_dropped && refuses_images(&text) {
-                    images_dropped = true;
-                    let mut plain = req.clone();
-                    plain.no_reasoning_echo = echo_dropped;
-                    without_images(&mut plain.messages);
-                    body = serde_json::to_vec(&build_body(&plain))?;
+                if changed {
+                    body = make_body(req, &plan)?;
                     continue;
                 }
                 return Err(friendly_http_error(status, &text, target.branded));
@@ -485,8 +640,11 @@ pub async fn stream_chat(
             "Cannot reach the provider. Check the URL and your connection."
         }));
     };
+    if plan.wire != initial || plan.effort != Effort::Normal {
+        learned().lock().expect("learned").insert(memory_key, (plan.wire, plan.effort));
+    }
 
-    let mut parser = SseParser::default();
+    let mut parser = wire::parser_for(plan.wire);
     let mut stream = resp.bytes_stream();
     let mut events = Vec::new();
     let mut dropped = false;
@@ -514,7 +672,7 @@ pub async fn stream_chat(
     for ev in calls {
         emit(ev);
     }
-    if let Some(msg) = parser.error.take().filter(|_| !recovered) {
+    if let Some(msg) = parser.take_error().filter(|_| !recovered) {
         return Err(Error::msg(msg));
     }
     if dropped && !recovered {
@@ -662,7 +820,11 @@ mod tests {
         p.feed(b"data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"hmm\"}}]}\n\ndata: {\"error\":{\"message\":\"upstream busy\"}}\n\n", &mut out);
         assert_eq!(out, vec![StreamEvent::Reasoning { text: "hmm".into() }]);
         assert_eq!(p.error.as_deref(), Some("upstream busy"));
-        assert_eq!(routing_headers("direct"), vec![("X-Blaze-Routing", "trusted".to_string())]);
+        // Direct was retired: it is Normal routing with the trusted sellers.
+        let trusted = vec![("X-Blaze-Routing", "basic".to_string()), ("X-Blaze-Provider", "trusted".to_string())];
+        assert_eq!(routing_headers("direct"), trusted);
+        assert_eq!(routing_headers("trusted"), trusted);
+        assert_eq!(routing_headers("fastest")[1].1, "fastest");
         assert_eq!(routing_headers("cheapest").len(), 2);
         assert!(routing_headers("").is_empty());
     }
@@ -757,5 +919,149 @@ mod tests {
         let mut m = vec![ChatMessage { role: "user".into(), content: "look".into(), images: Some(vec!["data:image/png;base64,AA".into()]), ..Default::default() }];
         without_images(&mut m);
         assert!(m[0].images.is_none() && m[0].content.starts_with("look\n[This provider could not accept 1"));
+    }
+
+    /// A scripted server: each entry is (expected path, status, body). It
+    /// records the request bodies it received, in order.
+    async fn scripted(steps: Vec<(&'static str, u16, String)>) -> (u16, std::sync::Arc<std::sync::Mutex<Vec<(String, serde_json::Value, String)>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen: std::sync::Arc<std::sync::Mutex<Vec<(String, serde_json::Value, String)>>> = Default::default();
+        let log = seen.clone();
+        tokio::spawn(async move {
+            for (path, status, body) in steps {
+                let (mut s, _) = listener.accept().await.unwrap();
+                let mut raw = Vec::new();
+                let mut buf = vec![0u8; 65536];
+                loop {
+                    let n = s.read(&mut buf).await.unwrap();
+                    raw.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&raw).to_string();
+                    if let Some(h) = text.find("\r\n\r\n") {
+                        let len: usize = text[..h].lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse().unwrap())).unwrap_or(0);
+                        if raw.len() >= h + 4 + len || n == 0 {
+                            break;
+                        }
+                    }
+                }
+                let text = String::from_utf8_lossy(&raw).to_string();
+                let (head, payload) = text.split_once("\r\n\r\n").unwrap();
+                let got_path = head.split(' ').nth(1).unwrap_or("").to_string();
+                log.lock().unwrap().push((got_path.clone(), serde_json::from_str(payload).unwrap_or_default(), head.to_ascii_lowercase()));
+                let (status, body) = if got_path == path { (status, body) } else { (404, "{\"error\":{\"message\":\"Not Found\"}}".into()) };
+                let ctype = if status == 200 { "text/event-stream" } else { "application/json" };
+                let resp = format!("HTTP/1.1 {status} X\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+                s.write_all(resp.as_bytes()).await.unwrap();
+            }
+        });
+        (port, seen)
+    }
+
+    fn agent_req() -> AiRequest {
+        let mut r = req("agent");
+        r.reasoning_effort = Some("high".into());
+        r
+    }
+
+    const CONFLICT: &str = "{\"error\":{\"message\":\"Function tools with reasoning_effort are not supported for gpt-6.2-astra in /v1/chat/completions. To use function tools, use /v1/responses or set reasoning_effort to 'none'.\"}}";
+    const RESP_OK: &str = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"pong\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}}\n\n";
+    const CHAT_OK: &str = "data: {\"choices\":[{\"delta\":{\"content\":\"pong\"}}]}\n\ndata: [DONE]\n\n";
+
+    #[test]
+    fn recognises_the_tools_and_thinking_conflict() {
+        let low = CONFLICT.to_ascii_lowercase();
+        assert!(effort_conflict(&low) && mentions_effort(&low));
+        assert!(!effort_conflict("context length exceeded"));
+        assert!(refuses_images("Model 'glm-5.3-flash' does not accept image input: 1 of the offers tried refused it."));
+    }
+
+    #[tokio::test]
+    async fn auto_provider_moves_to_the_responses_endpoint() {
+        let (port, seen) = scripted(vec![("/v1/chat/completions", 400, CONFLICT.into()), ("/v1/responses", 200, RESP_OK.into())]).await;
+        let target = Target::custom(&format!("http://127.0.0.1:{port}/v1"), Some("k"));
+        let mut got = Vec::new();
+        let mut r = agent_req();
+        r.model = "gpt-6.2-astra-auto".into();
+        stream_chat(&reqwest::Client::new(), &target, &r, CancellationToken::new(), |e| got.push(e)).await.unwrap();
+        assert_eq!(got, vec![StreamEvent::Text { text: "pong".into() }, StreamEvent::Usage { input_tokens: 3, output_tokens: 1 }]);
+        {
+            let s = seen.lock().unwrap();
+            assert_eq!(s[1].0, "/v1/responses");
+            assert_eq!(s[1].1["reasoning"]["effort"], "high");
+            assert!(s[1].1["tools"][0].get("name").is_some() && s[1].1["input"].is_array());
+        }
+        // The next request to the same model goes straight there.
+        let (port2, seen2) = scripted(vec![("/v1/responses", 200, RESP_OK.into())]).await;
+        let target2 = Target::custom(&format!("http://127.0.0.1:{port2}/v1"), Some("k"));
+        // (the memory is per provider address, so use the same model on a fresh address)
+        learned().lock().unwrap().insert(format!("{}|{}", target2.base, r.model), (Wire::Responses, Effort::Normal));
+        let mut again = Vec::new();
+        stream_chat(&reqwest::Client::new(), &target2, &r, CancellationToken::new(), |e| again.push(e)).await.unwrap();
+        assert_eq!(again.len(), 2);
+        assert_eq!(seen2.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_chat_only_provider_gets_no_thinking_instead() {
+        let (port, seen) = scripted(vec![("/v1/chat/completions", 400, CONFLICT.into()), ("/v1/chat/completions", 200, CHAT_OK.into())]).await;
+        // Fixed to chat (BlazeAPI itself, or a provider set to "chat").
+        let target = Target::custom(&format!("http://127.0.0.1:{port}/v1"), Some("k")).with_wire("chat");
+        let mut got = Vec::new();
+        let mut r = agent_req();
+        r.model = "gpt-6.2-astra-chat".into();
+        stream_chat(&reqwest::Client::new(), &target, &r, CancellationToken::new(), |e| got.push(e)).await.unwrap();
+        assert_eq!(got, vec![StreamEvent::Text { text: "pong".into() }]);
+        let s = seen.lock().unwrap();
+        assert_eq!(s[0].1["reasoning_effort"], "high");
+        assert_eq!(s[1].1["reasoning_effort"], "none");
+        assert!(s[1].1["tools"].is_array(), "the tools stay");
+    }
+
+    #[tokio::test]
+    async fn a_missing_responses_endpoint_falls_back_to_no_thinking() {
+        // Chat refuses, /responses does not exist: back to chat, effort none.
+        let (port, seen) = scripted(vec![("/v1/chat/completions", 400, CONFLICT.into()), ("/v1/chat/completions", 404, "{}".into()), ("/v1/chat/completions", 200, CHAT_OK.into())]).await;
+        let target = Target::custom(&format!("http://127.0.0.1:{port}/v1"), None);
+        let mut got = Vec::new();
+        let mut r = agent_req();
+        r.model = "gpt-6.2-astra-fallback".into();
+        stream_chat(&reqwest::Client::new(), &target, &r, CancellationToken::new(), |e| got.push(e)).await.unwrap();
+        assert_eq!(got, vec![StreamEvent::Text { text: "pong".into() }]);
+        let s = seen.lock().unwrap();
+        assert_eq!((s[1].0.as_str(), s[2].0.as_str(), s[2].1["reasoning_effort"].as_str()), ("/v1/responses", "/v1/chat/completions", Some("none")));
+    }
+
+    #[tokio::test]
+    async fn an_anthropic_provider_is_spoken_to_in_its_own_format() {
+        let anthropic_ok = "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"pong\"}}\n\n";
+        let (port, seen) = scripted(vec![("/v1/messages", 200, anthropic_ok.into())]).await;
+        let target = Target::custom(&format!("http://127.0.0.1:{port}/"), Some("secret")).with_wire("anthropic");
+        let mut got = Vec::new();
+        let mut r = agent_req();
+        r.model = "claude-test".into();
+        r.messages[0].images = Some(vec!["data:image/png;base64,AAAA".into()]);
+        stream_chat(&reqwest::Client::new(), &target, &r, CancellationToken::new(), |e| got.push(e)).await.unwrap();
+        assert_eq!(got, vec![StreamEvent::Text { text: "pong".into() }]);
+        let s = seen.lock().unwrap();
+        assert!(s[0].2.contains("anthropic-version: 2023-06-01") && s[0].2.contains("x-api-key: secret"));
+        assert_eq!(s[0].1["messages"][0]["content"][1]["source"]["type"], "base64");
+        assert!(s[0].1["system"].is_string() && s[0].1["tools"][0]["input_schema"].is_object());
+    }
+
+    #[tokio::test]
+    async fn an_image_refusal_is_retried_without_the_picture() {
+        let msg = "{\"error\":{\"message\":\"Model 'glm-5.3-flash' does not accept image input: 1 of the offers tried refused it.\"}}";
+        let (port, seen) = scripted(vec![("/v1/chat/completions", 400, msg.into()), ("/v1/chat/completions", 200, CHAT_OK.into())]).await;
+        let target = Target::custom(&format!("http://127.0.0.1:{port}/v1"), None).with_wire("chat");
+        let mut r = req("ask");
+        r.model = "glm-vision-refused".into();
+        r.messages[0].images = Some(vec!["data:image/png;base64,AAAA".into()]);
+        let mut got = Vec::new();
+        stream_chat(&reqwest::Client::new(), &target, &r, CancellationToken::new(), |e| got.push(e)).await.unwrap();
+        assert_eq!(got, vec![StreamEvent::Text { text: "pong".into() }]);
+        let s = seen.lock().unwrap();
+        assert!(s[0].1["messages"][1]["content"].is_array());
+        assert!(s[1].1["messages"][1]["content"].as_str().unwrap().contains("could not accept 1 attached image"));
     }
 }

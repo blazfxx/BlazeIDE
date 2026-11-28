@@ -480,11 +480,11 @@ impl Run<'_> {
         match providers::split_model_id(&self.cfg.model) {
             None => {
                 let key = self.backend.key.clone().ok_or("Not signed in to BlazeAPI. Run `blaze login`.")?;
-                Ok(Resolved { custom: false, base: self.backend.v1_base.clone(), key: Some(key), model: self.cfg.model.clone() })
+                Ok(Resolved { custom: false, wire: String::new(), base: self.backend.v1_base.clone(), key: Some(key), model: self.cfg.model.clone() })
             }
             Some((pid, m)) => {
                 let p = self.backend.providers.iter().find(|p| p.id == pid).ok_or("That custom provider was removed. Pick another model.")?;
-                Ok(Resolved { custom: true, base: p.base_url.clone(), key: (self.backend.provider_key)(pid), model: m.to_string() })
+                Ok(Resolved { custom: true, wire: p.wire.clone(), base: p.base_url.clone(), key: (self.backend.provider_key)(pid), model: m.to_string() })
             }
         }
     }
@@ -492,6 +492,8 @@ impl Run<'_> {
 
 struct Resolved {
     custom: bool,
+    /// A custom provider's endpoint setting.
+    wire: String,
     base: String,
     key: Option<String>,
     model: String,
@@ -500,7 +502,7 @@ struct Resolved {
 impl Resolved {
     fn target<'a>(&'a self, routing: &str) -> Target<'a> {
         if self.custom {
-            Target::custom(&self.base, self.key.as_deref())
+            Target::custom(&self.base, self.key.as_deref()).with_wire(&self.wire)
         } else {
             Target::blaze_routed(&self.base, self.key.as_deref().unwrap_or(""), routing)
         }

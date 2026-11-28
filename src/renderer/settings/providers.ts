@@ -48,6 +48,44 @@ function buildForm(existing: CustomProvider | null, done: () => void): HTMLEleme
   models.spellcheck = false;
   const status = el('div', 'prov-status');
 
+  // Which endpoint the provider speaks. "Automatic" starts with chat
+  // completions and moves on by itself when the provider asks for another.
+  const wire = el('select', 'prov-input') as HTMLSelectElement;
+  for (const [v, l] of [['', 'Automatic (recommended)'], ['chat', 'Chat Completions  /chat/completions'], ['responses', 'Responses  /responses'], ['anthropic', 'Anthropic Messages  /messages']]) {
+    const o = el('option') as HTMLOptionElement;
+    o.value = v; o.textContent = l; wire.appendChild(o);
+  }
+  wire.value = existing?.wire ?? '';
+  const wireBox = el('div', 'prov-wire');
+  wireBox.append(wire, el('div', 'prov-wire-note', 'Blaze translates its requests to the endpoint you pick. Automatic finds out: for example a model that only allows tools with thinking on /responses is moved there for you.'));
+
+  // Which models can see images: read from the provider, and yours to change.
+  const choices: Record<string, boolean> = {};
+  const seeing = new Set(existing?.vision ?? []);
+  const visionBox = el('div', 'prov-vision');
+  const visionSearch = input('text', 'Search models');
+  const visionList = el('div', 'prov-vision-list');
+  function drawVision(): void {
+    visionList.textContent = '';
+    const q = visionSearch.value.trim().toLowerCase();
+    const all = (existing?.models ?? []).filter((m) => !q || m.toLowerCase().includes(q));
+    for (const m of all.slice(0, 80)) {
+      const row = el('label', 'prov-vision-row');
+      const box = el('input') as HTMLInputElement;
+      box.type = 'checkbox';
+      box.checked = choices[m] ?? seeing.has(m);
+      box.addEventListener('change', () => { choices[m] = box.checked; });
+      const text = el('span');
+      text.textContent = m;
+      row.append(box, text);
+      visionList.appendChild(row);
+    }
+    if (all.length > 80) visionList.appendChild(el('div', 'prov-vision-more', `${all.length - 80} more: search to find them`));
+  }
+  visionSearch.addEventListener('input', drawVision);
+  visionBox.append(el('div', 'prov-label', 'Can see images'), el('div', 'prov-vision-note', 'Ticked from what the provider reports (or the model family when it reports nothing). Change any that are wrong.'), visionSearch, visionList);
+  drawVision();
+
   if (!existing) {
     const presets = el('div', 'prov-presets');
     for (const p of PRESETS) {
@@ -81,6 +119,8 @@ function buildForm(existing: CustomProvider | null, done: () => void): HTMLEleme
         name: name.value,
         baseUrl: url.value,
         models: models.value.split('\n'),
+        wire: wire.value,
+        vision: choices,
         apiKey: key.value ? key.value : undefined,
       })
       .then(async () => { await refreshModels(); done(); })
@@ -91,7 +131,7 @@ function buildForm(existing: CustomProvider | null, done: () => void): HTMLEleme
 
   const actions = el('div', 'form-actions');
   actions.append(fetchBtn, save, cancel);
-  form.append(field('Name', name), field('Base URL', url), field('API key', key), field('Models', models), actions, status);
+  form.append(field('Name', name), field('Base URL', url), field('API key', key), field('Models', models), field('Endpoint', wireBox), ...(existing ? [visionBox] : []), actions, status);
   return form;
 }
 
@@ -106,7 +146,7 @@ export function buildProvidersSection(): HTMLElement[] {
       const row = el('div', 'prov-row');
       const text = el('div', 'prov-row-text');
       text.appendChild(el('div', 'prov-row-name', escapeHtml(p.name)));
-      text.appendChild(el('div', 'prov-row-sub', escapeHtml(`${p.baseUrl} · ${p.models.length} model${p.models.length === 1 ? '' : 's'}${p.hasKey ? ' · key saved' : ''}`)));
+      text.appendChild(el('div', 'prov-row-sub', escapeHtml(`${p.baseUrl} · ${p.models.length} model${p.models.length === 1 ? '' : 's'}${p.wire ? ` · ${p.wire}` : ''}${p.vision?.length ? ` · ${p.vision.length} see images` : ''}${p.hasKey ? ' · key saved' : ''}`)));
       const edit = el('button', '', 'Edit');
       edit.addEventListener('click', () => void render(p));
       const del = el('button', 'btn-danger', 'Remove');
