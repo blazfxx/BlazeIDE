@@ -25,6 +25,9 @@ struct State {
     recent_projects: Vec<String>,
     #[serde(default)]
     model_cache: Option<Value>,
+    /// Which release's list `model_cache` is (older ones have other ids and tags).
+    #[serde(default)]
+    model_cache_ver: u32,
     #[serde(default)]
     account: Option<Value>,
     /// Random id for anonymous usage stats (only ever sent if the user opts in).
@@ -36,6 +39,9 @@ struct State {
     #[serde(default, skip_serializing_if = "Map::is_empty")]
     extra: Map<String, Value>,
 }
+
+/// Bump when the model list changes shape (ids, tags): older saved lists are dropped.
+const MODEL_CACHE_VER: u32 = 2;
 
 pub struct Store {
     path: PathBuf,
@@ -125,12 +131,14 @@ impl Store {
     }
 
     pub fn model_cache(&self) -> Option<Value> {
-        self.state.lock().expect("store lock").model_cache.clone()
+        let st = self.state.lock().expect("store lock");
+        if st.model_cache_ver == MODEL_CACHE_VER { st.model_cache.clone() } else { None }
     }
 
     pub fn set_model_cache(&self, v: Value) -> Result<()> {
         self.mutate(|st| {
             st.model_cache = Some(v);
+            st.model_cache_ver = MODEL_CACHE_VER;
             Ok(())
         })
     }

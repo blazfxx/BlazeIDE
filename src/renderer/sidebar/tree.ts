@@ -63,6 +63,23 @@ export class FileTree {
     this.setupKeys();
   }
 
+  /** Folders being read right now (big trees load a folder when it is opened). */
+  private loading = new Set<string>();
+
+  private load(node: FileNode): void {
+    if (this.loading.has(node.path)) return;
+    this.loading.add(node.path);
+    void window.void
+      .fsReadTree(node.path)
+      .then((t) => { node.children = t.children ?? []; })
+      .catch(() => { node.children = []; })
+      .finally(() => {
+        node.truncated = false;
+        this.loading.delete(node.path);
+        if (!this.inline) this.render();
+      });
+  }
+
   setRoot(root: FileNode | null): void {
     this.root = root;
     if (root) this.expanded.add(root.path);
@@ -270,6 +287,13 @@ export class FileTree {
     this.host.appendChild(row);
 
     if (node.isDirectory && isOpen) {
+      if (node.truncated) {
+        this.load(node);
+        const wait = el('div', 'tree-item tree-loading');
+        wait.appendChild(this.indentEl(depth + 1));
+        wait.appendChild(el('span', 'tree-name', 'Loading…'));
+        this.host.appendChild(wait);
+      }
       for (const child of node.children ?? []) this.renderNode(child, depth + 1);
       if (this.inline && !this.inline.renameOf && this.inline.parentPath === node.path) {
         this.renderInline(depth + 1);

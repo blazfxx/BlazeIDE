@@ -480,7 +480,7 @@ impl Run<'_> {
         match providers::split_model_id(&self.cfg.model) {
             None => {
                 let key = self.backend.key.clone().ok_or("Not signed in to BlazeAPI. Run `blaze login`.")?;
-                Ok(Resolved { custom: false, wire: String::new(), base: self.backend.v1_base.clone(), key: Some(key), model: self.cfg.model.clone() })
+                Ok(Resolved { custom: false, wire: String::new(), base: self.backend.v1_base.clone(), key: Some(key), model: crate::models::clean_id(&self.cfg.model) })
             }
             Some((pid, m)) => {
                 let p = self.backend.providers.iter().find(|p| p.id == pid).ok_or("That custom provider was removed. Pick another model.")?;
@@ -546,7 +546,7 @@ pub async fn run_turn(
             mode: cfg.mode.clone(),
             filename: None,
             // Third-party servers may reject OpenAI's newer parameters.
-            reasoning_effort: if resolved.custom { Some("off".into()) } else { cfg.reasoning_effort.clone() },
+            reasoning_effort: if resolved.custom { Some("off".into()) } else { crate::models::effort_for(&backend.models, &resolved.model, cfg.reasoning_effort.clone()) },
             media_gen: Some(cfg.image_gen),
             video_gen: Some(cfg.video_gen),
             no_reasoning_echo: false,
@@ -572,7 +572,7 @@ pub async fn run_turn(
             StreamEvent::Usage { input_tokens, output_tokens } => {
                 let _ = events.send(AgentEvent::Usage { input_tokens, output_tokens });
             }
-            StreamEvent::ToolDelta { .. } => {}
+            StreamEvent::ToolDelta { .. } | StreamEvent::Balance { .. } => {}
         })
         .await;
         drop(target);

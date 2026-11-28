@@ -57,6 +57,15 @@ export function initInput(host: HTMLElement, controller: Controller): void {
     void window.void.settingsSet({ reasoningEffort: v });
   });
   reasoning.appendChild(reasoningSelect);
+  // Only models that can think get a thinking setting (BlazeAPI says which).
+  function renderReasoning(): void {
+    const m = findModel(state.settings.selectedModel);
+    const none = !!m && m.tags.includes('abilities') && !m.tags.includes('reasoning');
+    reasoning.style.display = none ? 'none' : '';
+  }
+  renderReasoning();
+  bus.on('ai-model-selected', renderReasoning);
+  bus.on('models-changed', renderReasoning);
 
   // Approvals: what the agent may do without asking (Agent mode only).
   const approve = el('div', 'reasoning-pick approve-pick');

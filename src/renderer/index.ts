@@ -1,7 +1,7 @@
 // Renderer entry: auth gate, then workbench assembly and global wiring.
 
 import './bridge'; // installs window.void before anything else runs
-import { normModelId } from './ai-panel/chatStore';
+import { cleanModelId, normModelId } from './ai-panel/chatStore';
 import type { MenuAction } from '../shared/ipc';
 import { bus, state } from './state';
 import { initLayout } from './layout/index';
@@ -164,6 +164,13 @@ async function boot(): Promise<void> {
   // Load settings before building the UI that reads them, and apply the
   // theme/background immediately so there's no flash of the wrong look.
   state.settings = await window.void.settingsGet();
+  {
+    const clean = cleanModelId(state.settings.selectedModel);
+    if (clean !== state.settings.selectedModel) {
+      state.settings.selectedModel = clean;
+      void window.void.settingsSet({ selectedModel: clean });
+    }
+  }
   if (state.settings.aiRouting === 'direct') {
     // Direct was retired: it is Trusted now.
     state.settings.aiRouting = 'trusted';

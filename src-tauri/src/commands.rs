@@ -469,6 +469,14 @@ pub async fn ai_send(app: AppHandle, window: WebviewWindow, state: State<'_, App
         req.extra_tools.extend(blaze_core::web::tool::schemas(&req.mode));
     }
 
+    // BlazeAPI models: old saved ids are cleaned up, and the thinking setting
+    // is kept only for models that can think.
+    if providers::split_model_id(&req.model).is_none() {
+        req.model = models::clean_id(&req.model);
+        let list = state.models.read().expect("models lock").clone();
+        req.reasoning_effort = models::effort_for(&list, &req.model, req.reasoning_effort.clone());
+    }
+
     let route = match route_for(&state, &req.model) {
         Ok(r) => r,
         Err(m) => {

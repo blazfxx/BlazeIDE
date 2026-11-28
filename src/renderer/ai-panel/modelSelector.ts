@@ -72,6 +72,7 @@ export function initModelSelector(host: HTMLElement): void {
     void window.void.settingsSet(patch);
     if (m.kind === 'chat') closeDropdown();
     renderButtons();
+    bus.emit('ai-model-selected', undefined);
   }
 
   function modelRow(m: ModelEntry): HTMLElement {

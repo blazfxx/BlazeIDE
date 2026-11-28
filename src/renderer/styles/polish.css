@@ -663,3 +663,4 @@ textarea.bbe-input { resize: vertical; }
 .prov-vision-row { display: flex; align-items: center; gap: 10px; padding: 5px 8px; border-radius: 7px; font-family: var(--font-mono); font-size: 12px; cursor: pointer; overflow-wrap: anywhere; }
 .prov-vision-row:hover { background: var(--bg-hover); }
 .prov-row-sub { white-space: normal; overflow-wrap: anywhere; }
+.tree-loading { color: var(--text-secondary); font-style: italic; pointer-events: none; }

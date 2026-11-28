@@ -38,6 +38,14 @@ export function cannotSee(m: ModelEntry): boolean {
   return m.vision === false && (!m.tags.includes('custom') || m.tags.includes('text-only'));
 }
 
+/** Old saved ids: the `payg/` prefix and `-trusted` / `--trusted` / `-zdr` /
+ *  `--zdr` suffixes do not exist on the API any more. */
+export function cleanModelId(id: string): string {
+  if (id.startsWith('custom:')) return id;
+  const s = id.replace(/^payg\//, '');
+  return s.replace(/(--?)(trusted|zdr)$/, '');
+}
+
 /** Find a model by id, tolerating the Normal/Direct spelling differences. */
 export function findModel(id: string): ModelEntry | undefined {
   return state.models.find((x) => x.id === id) ?? state.models.find((x) => x.kind === 'chat' && normModelId(x.id) === normModelId(id));

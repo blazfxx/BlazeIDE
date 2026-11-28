@@ -27,6 +27,10 @@ pub struct FileNode {
     pub is_directory: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub children: Option<Vec<FileNode>>,
+    /// A folder whose contents were not read (the tree is big): asking for
+    /// the tree of this path gives them.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
@@ -46,20 +50,44 @@ struct Entry {
     name: String,
     path: PathBuf,
     is_dir: bool,
+    /// A symlink (only listed for the file tree, see `list_tree`).
+    link: bool,
 }
 
 /// Directory listing used everywhere: no symlinks (cycles and escapes), no
 /// junk, directories first, then case-insensitive by name.
 fn list(dir: &Path) -> Vec<Entry> {
+    list_with(dir, false)
+}
+
+/// The same, for the file tree: symlinks to files and folders are shown too
+/// (a folder link is never walked into, only opened on request). Search and
+/// replace keep using `list`, which never follows links.
+fn list_tree(dir: &Path) -> Vec<Entry> {
+    list_with(dir, true)
+}
+
+fn list_with(dir: &Path, links: bool) -> Vec<Entry> {
     let Ok(rd) = fs::read_dir(dir) else { return Vec::new() };
     let mut out: Vec<Entry> = rd
         .filter_map(|e| e.ok())
         .filter_map(|e| {
             let ft = e.file_type().ok()?;
-            if ft.is_symlink() {
-                return None;
-            }
             let name = e.file_name().to_string_lossy().into_owned();
+            if ft.is_symlink() {
+                if !links || SKIP_FILES.contains(&name.as_str()) {
+                    return None;
+                }
+                // Where it points (a broken link shows nothing).
+                let meta = fs::metadata(e.path()).ok()?;
+                if meta.is_dir() && SKIP_DIRS.contains(&name.as_str()) {
+                    return None;
+                }
+                if !meta.is_dir() && !meta.is_file() {
+                    return None;
+                }
+                return Some(Entry { name, path: e.path(), is_dir: meta.is_dir(), link: true });
+            }
             if ft.is_dir() {
                 if SKIP_DIRS.contains(&name.as_str()) {
                     return None;
@@ -67,40 +95,61 @@ fn list(dir: &Path) -> Vec<Entry> {
             } else if !ft.is_file() || SKIP_FILES.contains(&name.as_str()) {
                 return None;
             }
-            Some(Entry { name, path: e.path(), is_dir: ft.is_dir() })
+            Some(Entry { name, path: e.path(), is_dir: ft.is_dir(), link: false })
         })
         .collect();
     out.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
     out
 }
 
+/// The tree of a folder. Every level is read in full before the next one is
+/// started, so a huge folder can never hide its siblings: when the whole tree
+/// does not fit the entry budget, the deepest levels are left unread (marked
+/// `truncated`) and loaded when the folder is opened.
 pub fn build_tree(root: &Path) -> Result<FileNode> {
     if !root.is_dir() {
         return Err(Error::msg(format!("Not a directory: {}", root.display())));
     }
-    let mut budget = MAX_TREE_ENTRIES;
+    let mut best: Option<Vec<FileNode>> = None;
+    for depth in 1..=MAX_DEPTH {
+        let mut budget = MAX_TREE_ENTRIES;
+        match walk(root, 0, depth, &mut budget) {
+            Some(kids) => best = Some(kids),
+            None => break,
+        }
+    }
+    // Not even one level fits: show the first entries of the top level.
+    let kids = best.unwrap_or_else(|| {
+        list_tree(root).into_iter().take(MAX_TREE_ENTRIES).map(|e| FileNode { children: None, truncated: e.is_dir, name: e.name, path: e.path.display().to_string(), is_directory: e.is_dir }).collect()
+    });
     Ok(FileNode {
         name: root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| root.display().to_string()),
         path: root.display().to_string(),
         is_directory: true,
-        children: Some(children(root, 0, &mut budget)),
+        children: Some(kids),
+        truncated: false,
     })
 }
 
-fn children(dir: &Path, depth: usize, budget: &mut usize) -> Vec<FileNode> {
-    if depth >= MAX_DEPTH || *budget == 0 {
-        return Vec::new();
-    }
+/// `dir` listed down to `max` levels. None when the entries do not fit.
+fn walk(dir: &Path, level: usize, max: usize, budget: &mut usize) -> Option<Vec<FileNode>> {
     let mut nodes = Vec::new();
-    for e in list(dir) {
+    for e in list_tree(dir) {
         if *budget == 0 {
-            break;
+            return None;
         }
         *budget -= 1;
-        let kids = if e.is_dir { Some(children(&e.path, depth + 1, budget)) } else { None };
-        nodes.push(FileNode { name: e.name, path: e.path.display().to_string(), is_directory: e.is_dir, children: kids });
+        let path = e.path.display().to_string();
+        if !e.is_dir {
+            nodes.push(FileNode { name: e.name, path, is_directory: false, children: None, truncated: false });
+        } else if e.link || level + 1 >= max {
+            nodes.push(FileNode { name: e.name, path, is_directory: true, children: None, truncated: true });
+        } else {
+            let kids = walk(&e.path, level + 1, max, budget)?;
+            nodes.push(FileNode { name: e.name, path, is_directory: true, children: Some(kids), truncated: false });
+        }
     }
-    nodes
+    Some(nodes)
 }
 
 pub fn read_text(path: &Path) -> Result<String> {
@@ -377,5 +426,69 @@ mod tests {
         assert!(fuzzy_name_match("IDX", "index.ts"));
         assert!(!fuzzy_name_match("xyz", "index.ts"));
         assert!(!fuzzy_name_match("", "index.ts"));
+    }
+
+    #[test]
+    fn a_huge_folder_cannot_hide_its_siblings() {
+        let d = tempfile::tempdir().unwrap();
+        let r = d.path();
+        // "_refs" sorts first among the folders and holds more than the whole budget.
+        for sub in ["a", "b"] {
+            let dir = r.join("_refs").join(sub);
+            fs::create_dir_all(&dir).unwrap();
+            for i in 0..(MAX_TREE_ENTRIES / 2 + 100) {
+                fs::write(dir.join(format!("f{i}.txt")), "x").unwrap();
+            }
+        }
+        fs::create_dir_all(r.join("web/src")).unwrap();
+        fs::write(r.join("web/src/page.tsx"), "x").unwrap();
+        fs::create_dir_all(r.join("scripts")).unwrap();
+        fs::write(r.join("scripts/shoot.mjs"), "x").unwrap();
+        fs::write(r.join("README.md"), "x").unwrap();
+        let tree = build_tree(r).unwrap();
+        let top: Vec<&str> = tree.children.as_ref().unwrap().iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(top, vec!["_refs", "scripts", "web", "README.md"]);
+        let web = tree.children.as_ref().unwrap().iter().find(|n| n.name == "web").unwrap();
+        assert_eq!(web.children.as_ref().unwrap()[0].name, "src", "other folders are still opened");
+        // The big ones are not read, and say so; opening one reads it.
+        let refs = tree.children.as_ref().unwrap().iter().find(|n| n.name == "_refs").unwrap();
+        let a = &refs.children.as_ref().unwrap()[0];
+        assert!(a.truncated && a.children.is_none());
+        let opened = build_tree(Path::new(&a.path)).unwrap();
+        assert_eq!(opened.children.unwrap().len(), MAX_TREE_ENTRIES / 2 + 100);
+    }
+
+    #[test]
+    fn a_small_tree_is_read_in_full() {
+        let d = tempfile::tempdir().unwrap();
+        fs::create_dir_all(d.path().join("a/b/c")).unwrap();
+        fs::write(d.path().join("a/b/c/deep.txt"), "x").unwrap();
+        let tree = build_tree(d.path()).unwrap();
+        let c = &tree.children.as_ref().unwrap()[0].children.as_ref().unwrap()[0].children.as_ref().unwrap()[0];
+        assert_eq!((c.name.as_str(), c.truncated, c.children.as_ref().unwrap()[0].name.as_str()), ("c", false, "deep.txt"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn links_show_in_the_tree_but_search_never_follows_them() {
+        let d = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("secret.txt"), "needle").unwrap();
+        fs::write(d.path().join("real.txt"), "needle").unwrap();
+        fs::create_dir_all(d.path().join("src")).unwrap();
+        std::os::unix::fs::symlink(d.path().join("real.txt"), d.path().join("link-file.txt")).unwrap();
+        std::os::unix::fs::symlink(d.path().join("src"), d.path().join("link-dir")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), d.path().join("out")).unwrap();
+        std::os::unix::fs::symlink(d.path().join("nowhere"), d.path().join("broken")).unwrap();
+        let tree = build_tree(d.path()).unwrap();
+        let kids = tree.children.unwrap();
+        let names: Vec<&str> = kids.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(names, vec!["link-dir", "out", "src", "link-file.txt", "real.txt"], "broken links stay hidden");
+        let by = |n: &str| kids.iter().find(|k| k.name == n).unwrap();
+        assert!(by("link-dir").is_directory && by("link-dir").truncated, "a folder link is not walked into");
+        assert!(!by("link-file.txt").is_directory);
+        // Search must not read through the link to the outside folder.
+        let hits = search(d.path(), "needle");
+        assert!(hits.iter().all(|h| !h.path.contains("secret.txt")), "{hits:?}");
     }
 }

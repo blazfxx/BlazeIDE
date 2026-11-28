@@ -102,6 +102,16 @@ pub enum StreamEvent {
         #[serde(rename = "outputTokens")]
         output_tokens: u64,
     },
+    /// The account's balance / free allowance after this call (BlazeAPI's
+    /// `usage.blaze_*` fields), so the app need not ask again.
+    Balance {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        usd: Option<f64>,
+        #[serde(rename = "tokensRemaining", skip_serializing_if = "Option::is_none")]
+        tokens_remaining: Option<u64>,
+        #[serde(rename = "tokenLimit", skip_serializing_if = "Option::is_none")]
+        token_limit: Option<u64>,
+    },
 }
 
 const MAX_MESSAGES: usize = 2000;
@@ -272,6 +282,11 @@ impl SseParser {
             if let (Some(i), Some(o)) = (u["prompt_tokens"].as_u64(), u["completion_tokens"].as_u64()) {
                 out.push(StreamEvent::Usage { input_tokens: i, output_tokens: o });
             }
+            let usd = u.get("blaze_balance_usd").and_then(Value::as_f64);
+            let tokens_remaining = u.get("blaze_tokens_remaining").and_then(Value::as_u64);
+            if usd.is_some() || tokens_remaining.is_some() {
+                out.push(StreamEvent::Balance { usd, tokens_remaining, token_limit: u.get("blaze_token_limit").and_then(Value::as_u64) });
+            }
         }
         // A mid-stream error object from the gateway: remembered so the caller
         // can report it as an error (and the agent can retry), not as text.
@@ -369,6 +384,8 @@ pub struct Target<'a> {
     pub headers: Vec<(&'static str, String)>,
     /// The provider's base URL (other endpoints are built from it).
     pub base: String,
+    /// Where the website's own `/api/...` endpoints are (BlazeAPI only).
+    pub site: String,
     /// The endpoint the provider speaks; None = find out (custom providers).
     pub wire: Option<Wire>,
 }
@@ -390,14 +407,14 @@ pub fn routing_headers(routing: &str) -> Vec<(&'static str, String)> {
 impl<'a> Target<'a> {
     pub fn blaze(api_base: &str, key: &'a str) -> Self {
         let base = format!("{api_base}/paid/v1");
-        Target { url: format!("{base}/chat/completions"), key: Some(key), branded: true, headers: Vec::new(), base, wire: Some(Wire::Chat) }
+        Target { url: format!("{base}/chat/completions"), key: Some(key), branded: true, headers: Vec::new(), base, site: crate::models::site_base(api_base), wire: Some(Wire::Chat) }
     }
     pub fn blaze_routed(api_base: &str, key: &'a str, routing: &str) -> Self {
         Target { headers: routing_headers(routing), ..Self::blaze(api_base, key) }
     }
     pub fn custom(base_url: &str, key: Option<&'a str>) -> Self {
         let base = base_url.trim_end_matches('/').to_string();
-        Target { url: format!("{base}/chat/completions"), key, branded: false, headers: Vec::new(), base, wire: None }
+        Target { url: format!("{base}/chat/completions"), key, branded: false, headers: Vec::new(), site: base.clone(), base, wire: None }
     }
     /// A provider's endpoint setting: "chat", "responses", "anthropic", or
     /// "auto" / "" to find out.
@@ -448,6 +465,9 @@ struct Plan {
     /// endpoint does not exist, go back and send "none" instead.
     from_effort: bool,
     cheapest: bool,
+    /// A vendor route chosen after an image refusal (X-Blaze-Provider).
+    provider: Option<String>,
+    provider_tried: bool,
 }
 
 type Learned = std::collections::HashMap<String, (Wire, Effort)>;
@@ -458,13 +478,32 @@ fn learned() -> &'static std::sync::Mutex<Learned> {
     L.get_or_init(Default::default)
 }
 
-fn make_body(req: &AiRequest, plan: &Plan) -> Result<Vec<u8>> {
+/// Output room asked for on BlazeAPI. The balance hold is sized from it
+/// (capped at 8k), and without it the server assumes 2k.
+fn max_tokens_for(mode: &str) -> u32 {
+    if mode == "ask" { 8192 } else { 16000 }
+}
+
+/// A real vendor (not "trusted") that serves the model, for retrying a
+/// request whose pictures a Surplus seller refused.
+async fn vendor_route(http: &reqwest::Client, site: &str, model: &str) -> Option<String> {
+    let mut url = url::Url::parse(&format!("{site}/api/model-routes")).ok()?;
+    url.query_pairs_mut().append_pair("model", model);
+    let resp = http.get(url).timeout(Duration::from_secs(6)).send().await.ok()?;
+    let v: Value = resp.json().await.ok()?;
+    v.get("routes")?.as_array()?.iter().find(|r| r.get("label").is_some() && r.get("name").and_then(Value::as_str).is_some_and(|n| n != "trusted")).and_then(|r| r.get("name")?.as_str().map(str::to_string))
+}
+
+fn make_body(req: &AiRequest, plan: &Plan, branded: bool) -> Result<Vec<u8>> {
     let mut r = req.clone();
     r.no_reasoning_echo = plan.echo_dropped;
     if plan.images_dropped {
         without_images(&mut r.messages);
     }
     let mut chat = build_body(&r);
+    if branded && chat.get("max_tokens").is_none() {
+        chat["max_tokens"] = json!(max_tokens_for(&req.mode));
+    }
     match plan.effort {
         Effort::Normal => {}
         Effort::NoThinking => chat["reasoning_effort"] = json!("none"),
@@ -536,6 +575,8 @@ pub async fn stream_chat(
         tried: Vec::new(),
         from_effort: false,
         cheapest: false,
+        provider: None,
+        provider_tried: false,
     };
     if let Some((w, e)) = learned().lock().expect("learned").get(&memory_key).copied() {
         if target.wire.is_none() {
@@ -543,7 +584,7 @@ pub async fn stream_chat(
         }
         plan.effort = e;
     }
-    let mut body = make_body(req, &plan)?;
+    let mut body = make_body(req, &plan, target.branded)?;
     if body.len() > MAX_BODY_BYTES {
         return Err(Error::msg("This conversation is too large to send. Start a new chat."));
     }
@@ -571,7 +612,9 @@ pub async fn stream_chat(
         for (k, v) in &target.headers {
             post = post.header(*k, v.as_str());
         }
-        if plan.cheapest && !has_provider_header {
+        if let Some(p) = plan.provider.as_deref().filter(|_| !has_provider_header) {
+            post = post.header("X-Blaze-Provider", p);
+        } else if plan.cheapest && !has_provider_header {
             post = post.header("X-Blaze-Provider", "cheapest");
         }
         let r = tokio::select! {
@@ -608,9 +651,19 @@ pub async fn stream_chat(
                 } else if status == 400 && plan.effort != Effort::Omitted && mentions_effort(&low) {
                     plan.effort = Effort::Omitted;
                 } else if status == 400 && !plan.images_dropped && refuses_images(&text) {
-                    // Some gateways cannot pass pictures on. The pictures stay in
-                    // the history, so without this every later message would fail.
-                    plan.images_dropped = true;
+                    // A Surplus seller may run a text-only deployment: try a real
+                    // vendor first. Otherwise (or after that fails) send the text
+                    // only; the pictures stay in the history, so without this every
+                    // later message would fail.
+                    if target.branded && !has_provider_header && !plan.provider_tried {
+                        plan.provider_tried = true;
+                        match vendor_route(http, &target.site, &req.model).await {
+                            Some(p) => plan.provider = Some(p),
+                            None => plan.images_dropped = true,
+                        }
+                    } else {
+                        plan.images_dropped = true;
+                    }
                 } else if status == 503 && target.branded && !plan.cheapest && !has_provider_header && low.contains("coming back soon") {
                     // No seller at the usual price: try the cheapest healthy route.
                     tokio::time::sleep(Duration::from_secs(5)).await;
@@ -619,7 +672,7 @@ pub async fn stream_chat(
                     changed = false;
                 }
                 if changed {
-                    body = make_body(req, &plan)?;
+                    body = make_body(req, &plan, target.branded)?;
                     continue;
                 }
                 return Err(friendly_http_error(status, &text, target.branded));
@@ -949,7 +1002,7 @@ mod tests {
                 let (head, payload) = text.split_once("\r\n\r\n").unwrap();
                 let got_path = head.split(' ').nth(1).unwrap_or("").to_string();
                 log.lock().unwrap().push((got_path.clone(), serde_json::from_str(payload).unwrap_or_default(), head.to_ascii_lowercase()));
-                let (status, body) = if got_path == path { (status, body) } else { (404, "{\"error\":{\"message\":\"Not Found\"}}".into()) };
+                let (status, body) = if got_path.split('?').next() == Some(path) { (status, body) } else { (404, "{\"error\":{\"message\":\"Not Found\"}}".into()) };
                 let ctype = if status == 200 { "text/event-stream" } else { "application/json" };
                 let resp = format!("HTTP/1.1 {status} X\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
                 s.write_all(resp.as_bytes()).await.unwrap();
@@ -1063,5 +1116,32 @@ mod tests {
         let s = seen.lock().unwrap();
         assert!(s[0].1["messages"][1]["content"].is_array());
         assert!(s[1].1["messages"][1]["content"].as_str().unwrap().contains("could not accept 1 attached image"));
+    }
+
+    #[tokio::test]
+    async fn an_image_refusal_tries_a_vendor_route_first() {
+        let msg = "{\"error\":{\"message\":\"Model 'glm-5.3-flash' does not accept image input: 1 of the offers tried refused it.\"}}";
+        let routes = "{\"routes\":[{\"name\":\"willow\"},{\"name\":\"trusted\",\"label\":\"Trusted\"},{\"name\":\"google\",\"label\":\"Google\"}]}";
+        let (port, seen) = scripted(vec![("/paid/v1/chat/completions", 400, msg.into()), ("/api/model-routes", 200, routes.into()), ("/paid/v1/chat/completions", 200, CHAT_OK.into())]).await;
+        let target = Target::blaze(&format!("http://127.0.0.1:{port}"), "k");
+        let mut r = req("ask");
+        r.model = "glm-vendor-retry".into();
+        r.messages[0].images = Some(vec!["data:image/png;base64,AAAA".into()]);
+        let mut got = Vec::new();
+        stream_chat(&reqwest::Client::new(), &target, &r, CancellationToken::new(), |e| got.push(e)).await.unwrap();
+        assert_eq!(got, vec![StreamEvent::Text { text: "pong".into() }]);
+        let s = seen.lock().unwrap();
+        assert!(s[1].0.starts_with("/api/model-routes?model=glm-vendor-retry"));
+        assert!(s[2].2.contains("x-blaze-provider: google"), "{}", s[2].2);
+        assert!(s[2].1["messages"][1]["content"].is_array(), "the picture is still there");
+        assert_eq!(s[2].1["max_tokens"], 8192);
+    }
+
+    #[test]
+    fn balance_comes_from_the_usage_block() {
+        let mut p = SseParser::default();
+        let mut out = Vec::new();
+        p.feed(b"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2,\"blaze_billing\":\"payg\",\"blaze_balance_usd\":12.34}}\n\n", &mut out);
+        assert_eq!(out, vec![StreamEvent::Usage { input_tokens: 5, output_tokens: 2 }, StreamEvent::Balance { usd: Some(12.34), tokens_remaining: None, token_limit: None }]);
     }
 }

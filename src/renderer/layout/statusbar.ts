@@ -80,6 +80,11 @@ export function initStatusbar(host: HTMLElement): void {
     // Refresh usage right after a request finishes (it just consumed some).
     if (!streaming) void refreshUsage();
   });
+  bus.on('balance-changed', ({ usd }) => {
+    balanceEl.textContent = formatUsd(usd);
+    balanceEl.classList.toggle('warn', usd < 0.5);
+    balanceEl.style.display = '';
+  });
   bus.on('session-changed', () => void refreshUsage());
   void refreshUsage();
   window.setInterval(() => void refreshUsage(), 60_000);

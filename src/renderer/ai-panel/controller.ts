@@ -230,6 +230,10 @@ export function createController(view: ChatView, editor: EditorArea): Controller
           emitContext();
         }
         break;
+      case 'balance':
+        // The reply says what is left: no need to ask the server again.
+        if (typeof ev.usd === 'number') bus.emit('balance-changed', { usd: ev.usd });
+        break;
       case 'error':
         // Shown by the caller, which may retry the round first.
         lastError = { message: ev.message, status: ev.status };

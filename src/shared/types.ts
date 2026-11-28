@@ -149,6 +149,7 @@ export type AIStreamEvent =
   | { requestId: string; type: 'tool_call'; toolCall: ToolCall }
   | { requestId: string; type: 'tool_delta'; index: number; id?: string; name?: string; argsDelta: string }
   | { requestId: string; type: 'usage'; inputTokens: number; outputTokens: number }
+  | { requestId: string; type: 'balance'; usd?: number; tokensRemaining?: number; tokenLimit?: number }
   | { requestId: string; type: 'done' }
   | { requestId: string; type: 'error'; message: string; status?: number };
 
@@ -157,6 +158,8 @@ export interface FileNode {
   path: string;
   isDirectory: boolean;
   children?: FileNode[];
+  /** A folder whose contents were not read yet (a big tree): opening it loads them. */
+  truncated?: boolean;
 }
 
 /** A saved AI conversation, persisted as JSON under <project>/.blazeide/chats. */

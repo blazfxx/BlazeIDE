@@ -86,6 +86,103 @@ pub fn display_name(id: &str) -> String {
     name
 }
 
+/// What BlazeAPI says a model can do (`/api/v1/official-models`).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Abilities {
+    pub vision: Option<bool>,
+    pub reasoning: Option<bool>,
+    pub tools: Option<bool>,
+}
+
+/// Where the website's own endpoints (`/api/...`) live for a given API base.
+pub fn site_base(v1_base: &str) -> String {
+    let b = v1_base.trim_end_matches('/');
+    if b == "https://api.blazeapi.org" { "https://blazeapi.org".into() } else { b.to_string() }
+}
+
+/// official-models rows by `id` (the row's `model_id`, e.g. "payg/claude-sonnet-5-5").
+pub fn parse_abilities(body: &Value) -> std::collections::HashMap<String, Abilities> {
+    let rows = body.as_array().or_else(|| body.get("data").and_then(Value::as_array)).or_else(|| body.get("models").and_then(Value::as_array));
+    rows.into_iter()
+        .flatten()
+        .filter_map(|m| {
+            let a = m.get("abilities").filter(|a| a.is_object())?;
+            let flag = |k: &str| a.get(k).and_then(Value::as_bool);
+            Some((m.get("id")?.as_str()?.to_string(), Abilities { vision: flag("vision"), reasoning: flag("reasoning"), tools: flag("tool_calling") }))
+        })
+        .collect()
+}
+
+/// Fold abilities into the list: the vision flag, and the tags `abilities`
+/// (they are known for this model), `reasoning` and `no-tools`.
+pub fn apply_abilities(models: &mut [ModelEntry], ab: &std::collections::HashMap<String, Abilities>) {
+    for m in models.iter_mut().filter(|m| m.kind == "chat") {
+        let Some(a) = ab.get(&m.id).or_else(|| ab.get(&format!("payg/{}", m.id))) else { continue };
+        if let Some(v) = a.vision {
+            m.vision = v;
+        }
+        m.tags.retain(|t| !matches!(t.as_str(), "abilities" | "reasoning" | "no-tools"));
+        m.tags.push("abilities".into());
+        if a.reasoning == Some(true) {
+            m.tags.push("reasoning".into());
+        }
+        if a.tools == Some(false) {
+            m.tags.push("no-tools".into());
+        }
+    }
+}
+
+static ABILITIES: std::sync::Mutex<Option<(std::time::Instant, std::collections::HashMap<String, Abilities>)>> = std::sync::Mutex::new(None);
+const ABILITIES_TTL: Duration = Duration::from_secs(30 * 60);
+
+/// The abilities list, cached for 30 minutes. Quiet on failure (the rows'
+/// own flags are used then).
+pub async fn fetch_abilities(http: &reqwest::Client, site: &str) -> std::collections::HashMap<String, Abilities> {
+    if let Some((at, map)) = ABILITIES.lock().expect("abilities").as_ref() {
+        if at.elapsed() < ABILITIES_TTL {
+            return map.clone();
+        }
+    }
+    let got = async {
+        let resp = http.get(format!("{site}/api/v1/official-models?section=models")).timeout(Duration::from_secs(8)).send().await.ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        Some(parse_abilities(&resp.json::<Value>().await.ok()?))
+    }
+    .await;
+    let mut slot = ABILITIES.lock().expect("abilities");
+    match got {
+        Some(map) if !map.is_empty() => {
+            *slot = Some((std::time::Instant::now(), map.clone()));
+            map
+        }
+        _ => slot.as_ref().map(|(_, m)| m.clone()).unwrap_or_default(),
+    }
+}
+
+/// Keep the thinking setting only for models that can think (when known).
+pub fn effort_for(models: &[ModelEntry], model: &str, effort: Option<String>) -> Option<String> {
+    match models.iter().find(|m| m.id == model) {
+        Some(m) if m.tags.iter().any(|t| t == "abilities") && !m.tags.iter().any(|t| t == "reasoning") => Some("off".into()),
+        _ => effort,
+    }
+}
+
+/// Old saved ids: `payg/` prefix and `-trusted` / `--trusted` / `-zdr` /
+/// `--zdr` suffixes do not exist on the API any more.
+pub fn clean_id(id: &str) -> String {
+    let mut s = id.trim();
+    s = s.strip_prefix("payg/").unwrap_or(s);
+    for suf in ["--trusted", "--zdr", "-trusted", "-zdr"] {
+        if let Some(x) = s.strip_suffix(suf) {
+            s = x;
+            break;
+        }
+    }
+    s.to_string()
+}
+
 /// Tag on a model that is listed but cannot be called until the account has balance.
 pub const NEEDS_BALANCE: &str = "needs-balance";
 
@@ -171,7 +268,11 @@ pub async fn fetch_models(http: &reqwest::Client, api_base: &str, api_key: Optio
         return Err(Error::Http { status: resp.status().as_u16(), message: "Could not load models from BlazeAPI".into() });
     }
     let body: Value = resp.json().await?;
-    Ok((parse_models(&body), body))
+    let mut models = parse_models(&body);
+    // What each model can do, from BlazeAPI's own list (vision, thinking, tools).
+    let ab = fetch_abilities(http, &site_base(api_base)).await;
+    apply_abilities(&mut models, &ab);
+    Ok((models, body))
 }
 
 #[derive(serde::Deserialize, Default)]
@@ -532,5 +633,30 @@ mod tests {
         assert_eq!(image_candidates(&imgs, "gone"), vec!["seedream-4.5", "gpt-image-2"]);
         assert_eq!(size_for("gpt-image-2", Some("16:9")), Some("1536x1024"));
         assert_eq!(size_for("nano-banana-pro", Some("16:9")), None);
+    }
+
+    #[test]
+    fn abilities_and_old_ids() {
+        let ab = parse_abilities(&json!([
+            { "id": "payg/claude-sonnet-5-5", "abilities": { "vision": true, "reasoning": true, "tool_calling": true } },
+            { "id": "free/deepseek-v4.1-flash", "abilities": { "vision": false, "reasoning": false, "tool_calling": false } },
+            { "id": "free/unknown", "abilities": null }
+        ]));
+        let mk = |id: &str, vision: bool| ModelEntry { id: id.into(), display_name: String::new(), provider: String::new(), context_window: 0, kind: "chat".into(), vision, free: false, price_in: 0.0, price_out: 0.0, tags: vec![] };
+        let mut list = vec![mk("claude-sonnet-5-5", false), mk("free/deepseek-v4.1-flash", true), mk("free/unknown", true)];
+        apply_abilities(&mut list, &ab);
+        assert!(list[0].vision && list[0].tags.contains(&"reasoning".to_string()) && list[0].tags.contains(&"abilities".to_string()));
+        assert!(!list[1].vision && list[1].tags.contains(&"no-tools".to_string()) && !list[1].tags.contains(&"reasoning".to_string()));
+        assert!(list[2].vision && list[2].tags.is_empty(), "unknown abilities change nothing");
+        assert_eq!(effort_for(&list, "claude-sonnet-5-5", Some("high".into())).as_deref(), Some("high"));
+        assert_eq!(effort_for(&list, "free/deepseek-v4.1-flash", Some("high".into())).as_deref(), Some("off"));
+        assert_eq!(effort_for(&list, "free/unknown", Some("high".into())).as_deref(), Some("high"));
+        assert_eq!(effort_for(&list, "not-listed", Some("low".into())).as_deref(), Some("low"));
+        assert_eq!(clean_id("payg/claude-sonnet-5-5"), "claude-sonnet-5-5");
+        assert_eq!(clean_id("claude-fable-5.2--trusted"), "claude-fable-5.2");
+        assert_eq!(clean_id("glm-5.3-flash-zdr"), "glm-5.3-flash");
+        assert_eq!(clean_id("free/glm-5.3"), "free/glm-5.3");
+        assert_eq!(site_base("https://api.blazeapi.org/"), "https://blazeapi.org");
+        assert_eq!(site_base("http://127.0.0.1:9"), "http://127.0.0.1:9");
     }
 }
